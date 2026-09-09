@@ -268,10 +268,12 @@ class DolaAutomationService : AccessibilityService() {
         BotLog.add("Экран даты рождения — прокручиваю год к 2000")
         if (!scrollForText("2000", 30)) {
             BotLog.add("Не нашёл 2000 — выбери год сам, я жду 10с")
-            repeat(10) {
+            var t = 0
+            while (t < 10) {
                 checkStop()
                 Thread.sleep(1000)
-                if (findNodes { (it.text ?: "").toString().trim() == "2000" }.isNotEmpty()) break
+                t++
+                if (findNodes { (it.text ?: "").toString().trim() == "2000" }.isNotEmpty()) t = 10
             }
         }
         Thread.sleep(1200)
