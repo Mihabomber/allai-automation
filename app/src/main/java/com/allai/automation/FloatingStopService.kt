@@ -57,8 +57,8 @@ class FloatingStopService : Service() {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT)
-            p.gravity = Gravity.BOTTOM or Gravity.START
-            p.x = 16; p.y = 80
+            p.gravity = Gravity.TOP or Gravity.END
+            p.x = 12; p.y = 110
             wm!!.addView(view, p)
         } catch (e: Exception) {
             try { Toast.makeText(this, "Float: " + e.message, Toast.LENGTH_LONG).show() } catch (_: Exception) {}

@@ -221,8 +221,16 @@ class DolaAutomationService : AccessibilityService() {
         val end = System.currentTimeMillis() + timeout
         while (System.currentTimeMillis() < end) {
             checkStop()
+            if (birthdayVisible()) {
+                handleBirthday()
+                continue
+            }
+            if (loginVisible()) {
+                handleLogin()
+                continue
+            }
             if (findEditable() != null) return
-            if (screenHasText(listOf("Сообщение", "Опишите видео", "Создано ИИ"))) return
+            if (screenHasText(listOf("Сообщение", "Опишите видео", "Создано ИИ", "Fast"))) return
             Thread.sleep(1500)
         }
         BotLog.add("Окно Dola не подтвердилось, продолжаю")
@@ -251,21 +259,28 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun birthdayVisible(): Boolean {
-        val keys = listOf("дата рождения", "Дата рождения", "date of birth", "Date of Birth", "Выберите дату")
+        val keys = listOf("день рождения", "дата рождения", "Когда у вас", "Ваш возраст", "date of birth", "Date of Birth")
         if (findNodes { matches(it, keys, false) }.isNotEmpty()) return true
-        return screenHasText(listOf("дата рождения", "Дата рождения", "date of birth", "Выберите дату"))
+        return screenHasText(listOf("день рождения", "дата рождения", "Когда у вас", "Ваш возраст", "date of birth"))
     }
 
     private fun handleBirthday() {
         if (!birthdayVisible()) {
-            Thread.sleep(1500)
+            Thread.sleep(1200)
             if (!birthdayVisible()) return
         }
-        BotLog.add("Экран даты рождения — кручу год до 2000")
+        BotLog.add("Экран дня рождения — кручу ЛЕВОЕ колесо года до 2000")
         if (!scrollYearTo2000()) BotLog.add("2000 не найден — продолжаю")
         Thread.sleep(800)
-        tapExact(listOf("Далее", "Готово", "ОК", "OK", "Подтвердить", "Сохранить", "Done", "Next"), 8_000, optional = true)
-        Thread.sleep(1500)
+        if (!tapExact(listOf("Далее"), 6_000, optional = true) && !ocrTapElement("Далее")) {
+            val scr = Rect()
+            rootInActiveWindow?.getBoundsInScreen(scr)
+            if (scr.height() > 0) {
+                BotLog.add("Жму Далее по координатам")
+                tap(scr.left + scr.width() * 0.50f, scr.top + scr.height() * 0.93f)
+            }
+        }
+        Thread.sleep(2000)
         BotLog.add("Дату рождения прошёл")
     }
 
@@ -273,29 +288,25 @@ class DolaAutomationService : AccessibilityService() {
         val scr = Rect()
         rootInActiveWindow?.getBoundsInScreen(scr) ?: return false
         if (scr.height() == 0) return false
-        val xYear = scr.left + scr.width() * 0.78f
-        val y1 = scr.top + scr.height() * 0.48f
-        val y2 = scr.top + scr.height() * 0.62f
+        val xYear = scr.left + scr.width() * 0.18f
+        val yFrom = scr.top + scr.height() * 0.36f
+        val yTo = scr.top + scr.height() * 0.52f
         var i = 0
-        while (i < 28) {
+        while (i < 40) {
             checkStop()
-            if (findNodes { (it.text ?: "").toString().trim() == "2000" }.isNotEmpty()) {
-                val n = findNodes { (it.text ?: "").toString().trim() == "2000" }[0]
-                val b = Rect(); n.getBoundsInScreen(b)
+            val hit = findNodes { (it.text ?: "").toString().trim() == "2000" }
+            if (hit.isNotEmpty()) {
+                val b = Rect(); hit[0].getBoundsInScreen(b)
                 tap(b.exactCenterX(), b.exactCenterY())
+                BotLog.add("Год 2000 выбран")
                 return true
             }
-            if (ocrTapElement("\\b2000\\b")) return true
-            swipe(xYear, y1, xYear, y2, 280)
-            Thread.sleep(400)
-            i++
-        }
-        i = 0
-        while (i < 12) {
-            checkStop()
-            if (ocrTapElement("\\b2000\\b")) return true
-            swipe(xYear, y2, xYear, y1, 280)
-            Thread.sleep(400)
+            if (ocrTapElement("\\b2000\\b")) {
+                BotLog.add("Год 2000 выбран (OCR)")
+                return true
+            }
+            swipe(xYear, yFrom, xYear, yTo, 220)
+            Thread.sleep(280)
             i++
         }
         return false
@@ -358,19 +369,20 @@ class DolaAutomationService : AccessibilityService() {
             BotLog.add("Pro уже включён")
             return
         }
-        if (!tapByText(listOf("Fast", "Быстрый"), 6_000, optional = true)) {
-            BotLog.add("Чип Fast не найден")
-        }
-        Thread.sleep(1200)
-        if (tapByText(listOf("Продвинутая модель"), 6_000, optional = true) ||
-            ocrTapElement("Продвинутая модель") ||
-            tapExact(listOf("Pro"), 4_000, optional = true)
-        ) {
-            BotLog.add("Выбрал Pro")
-        } else {
-            BotLog.add("Пункт Pro не найден — работаю как есть")
+        val fast = tapByText(listOf("Fast", "Быстрый"), 5_000, optional = true) || ocrTapElement("Fast|Быстрый")
+        if (!fast) {
+            val scr = Rect(); rootInActiveWindow?.getBoundsInScreen(scr)
+            if (scr.height() > 0) {
+                BotLog.add("Жму Fast по координатам")
+                tap(scr.left + scr.width() * 0.16f, scr.top + scr.height() * 0.46f)
+            }
         }
         Thread.sleep(1500)
+        val pro = tapByText(listOf("Продвинутая модель"), 6_000, optional = true) ||
+            ocrTapElement("Продвинутая модель|Продвинутая") ||
+            tapExact(listOf("Pro"), 3_000, optional = true)
+        if (pro) BotLog.add("Выбрал Pro") else BotLog.add("Пункт Pro не найден")
+        Thread.sleep(1200)
     }
 
     private fun proChipOn(): Boolean {
@@ -384,13 +396,18 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun openVideoPanel() {
         BotLog.add("Открываю «Создание контента»")
-        val ok = tapByText(listOf("Создание контента", "Создание кон"), 8_000, optional = true) ||
+        val ok = tapByText(listOf("Создание контента", "Создание кон"), 6_000, optional = true) ||
             ocrTapElement("Создание контента|Создание кон")
-        if (!ok) BotLog.add("Чип «Создание контента» не найден")
-        Thread.sleep(1500)
-        if (tapExact(listOf("Видео"), 5_000, optional = true) || ocrTapElement("^Видео$")) {
-            BotLog.add("Вкладка Видео")
+        if (!ok) {
+            val scr = Rect(); rootInActiveWindow?.getBoundsInScreen(scr)
+            if (scr.height() > 0) {
+                BotLog.add("Жму «Создание контента» по координатам")
+                tap(scr.left + scr.width() * 0.82f, scr.top + scr.height() * 0.46f)
+            }
         }
+        Thread.sleep(1500)
+        val vid = tapExact(listOf("Видео"), 5_000, optional = true) || ocrTapElement("Видео")
+        if (vid) BotLog.add("Вкладка Видео") else BotLog.add("Вкладка Видео не найдена")
         Thread.sleep(1000)
     }
 
@@ -627,22 +644,38 @@ class DolaAutomationService : AccessibilityService() {
         if (n == null) return false
         val b = Rect()
         n.getBoundsInScreen(b)
-        BotLog.add("Поле найдено — долгий тап → Вставить")
+        BotLog.add("Поле найдено — вставляю промпт")
         tap(b.exactCenterX(), b.exactCenterY())
-        Thread.sleep(600)
-        var k = 0
-        while (k < 3) {
-            k++
-            longPress(b.exactCenterX(), b.exactCenterY())
-            Thread.sleep(900)
-            if (tapPaste()) {
-                BotLog.add("Промпт вставлен (долгий тап → Вставить)")
+        Thread.sleep(1200)
+        val clipHint = prompt.trim().take(12)
+        if (clipHint.length >= 4) {
+            val chips = findNodes {
+                val t = (it.text ?: "").toString()
+                t.contains(clipHint.take(8), true) || t.startsWith(clipHint.take(6), true)
+            }
+            if (chips.isNotEmpty() && clickNode(smallestNode(chips))) {
+                BotLog.add("Промпт вставлен (чип буфера)")
                 return true
             }
-            if (ocrTapElement("Вставить|Paste")) {
-                BotLog.add("Промпт вставлен (OCR Вставить)")
+            if (ocrTapElement(Regex.escape(clipHint.take(8)))) {
+                BotLog.add("Промпт вставлен (OCR чип буфера)")
                 return true
             }
+        }
+        val scr = Rect(); rootInActiveWindow?.getBoundsInScreen(scr)
+        if (scr.height() > 0) {
+            tap(scr.left + scr.width() * 0.48f, scr.top + scr.height() * 0.57f)
+            Thread.sleep(600)
+            if (n.text?.toString()?.isNotBlank() == true && n.text.toString() != "Сообщение") {
+                BotLog.add("Промпт вставлен (чип по координатам)")
+                return true
+            }
+        }
+        longPress(b.exactCenterX(), b.exactCenterY())
+        Thread.sleep(900)
+        if (tapPaste() || ocrTapElement("Вставить|Paste")) {
+            BotLog.add("Промпт вставлен (долгий тап → Вставить)")
+            return true
         }
         if (n.performAction(AccessibilityNodeInfo.ACTION_PASTE, Bundle())) {
             BotLog.add("Промпт вставлен (буфер)")
