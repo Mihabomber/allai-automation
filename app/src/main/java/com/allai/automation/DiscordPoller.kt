@@ -84,6 +84,7 @@ object DiscordPoller {
             if (chId.isNotEmpty()) {
                 Config.channel = chId
                 Config.lastMsgId = "0"
+                Config.processed = ""
                 BotLog.add("Discord: ЛС найден (ID $chId) — сохранено, пользуйся")
                 return
             }
@@ -93,7 +94,7 @@ object DiscordPoller {
 
     fun nextJob(): Job? {
         if (!Config.ready()) return null
-        val r = get("/channels/${Config.channel}/messages?limit=10&after=${Config.lastMsgId}")
+        val r = get("/channels/${Config.channel}/messages?limit=10")
         when {
             r.code == -1 -> { BotLog.add("Discord: сеть — ${r.body}"); return null }
             r.code == 401 -> { BotLog.add("Discord: токен невалиден (401)"); return null }
@@ -102,19 +103,34 @@ object DiscordPoller {
             r.code !in 200..299 -> { BotLog.add("Discord: HTTP ${r.code}"); return null }
         }
         val arr = JSONArray(r.body)
-        var newest = Config.lastMsgId
+        val done = Config.processed.split(",").filter { it.isNotBlank() }.toMutableSet()
         var job: Job? = null
+        var jobId = ""
         for (i in 0 until arr.length()) {
             val m = arr.getJSONObject(i)
             val id = m.getString("id")
-            if (newest == "0" || id.toLong() > newest.toLong()) newest = id
-            if (job == null) job = parse(m)
+            if (id in done) continue
+            val j = parse(m)
+            if (j != null) { job = j; jobId = id; break }
         }
-        Config.lastMsgId = newest
+        if (job != null) {
+            for (i in 0 until arr.length()) {
+                val id = arr.getJSONObject(i).getString("id")
+                if (id.toLong() <= jobId.toLong()) done.add(id)
+            }
+            Config.processed = done.takeLast(60).joinToString(",")
+        }
         if (job == null && arr.isNotEmpty()) {
             val now = System.currentTimeMillis()
             if (now - lastEmptyLog > 60_000) {
-                BotLog.add("Опрос: ${arr.length()} сообщ., задач с [PART1] нет")
+                val sb = StringBuilder("Опрос: ${arr.length()} сообщ. — задач нет:")
+                for (i in 0 until minOf(3, arr.length())) {
+                    val m = arr.getJSONObject(i)
+                    val t = m.optString("content")
+                    val s = if (t.isBlank()) "(пусто/вложения)" else if (t.length > 30) t.take(30) + "…" else t
+                    sb.append(" | ${m.optJSONObject("author")?.optString("username")}: $s")
+                }
+                BotLog.add(sb.toString())
                 lastEmptyLog = now
             }
         }
@@ -122,10 +138,21 @@ object DiscordPoller {
     }
 
     private fun parse(m: JSONObject): Job? {
-        val text = m.optString("content")
-        if (!text.contains("[PART1]")) return null
-        val p1 = text.substringAfter("[PART1]").substringBefore("[PART2]").trim()
-        val p2 = if (text.contains("[PART2]")) text.substringAfter("[PART2]").substringBefore("[PART3]").trim() else ""
+        var text = m.optString("content")
+        val em = m.optJSONArray("embeds")
+        if (em != null) {
+            for (i in 0 until em.length()) {
+                val e = em.getJSONObject(i)
+                text += "\n" + e.optString("title") + "\n" + e.optString("description")
+            }
+        }
+        val up = text.uppercase()
+        val i1 = up.indexOf("[PART1]")
+        if (i1 < 0) return null
+        val i2 = up.indexOf("[PART2]", i1)
+        val i3 = if (i2 >= 0) up.indexOf("[PART3]", i2) else -1
+        val p1 = text.substring(i1 + 7, if (i2 >= 0) i2 else text.length).trim()
+        val p2 = if (i2 >= 0) text.substring(i2 + 7, if (i3 >= 0) i3 else text.length).trim() else ""
         if (p1.isEmpty()) return null
         val images = ArrayList<String>(2)
         var audio: String? = null
@@ -149,7 +176,7 @@ object DiscordPoller {
                 }
             }
         }
-        BotLog.add("Новая задача ${m.getString("id")}: фото ${images.size}, аудио ${if (audio != null) "да" else "нет"}")
+        BotLog.add("Новая задача ${m.getString("id")} (${m.optJSONObject("author")?.optString("username") ?: "?"}): фото ${images.size}, аудио ${if (audio != null) "да" else "нет"}")
         return Job(m.getString("id"), m.optString("channel_id", Config.channel), p1, p2, images, audio)
     }
 

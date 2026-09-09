@@ -189,11 +189,15 @@ class MainActivity : Activity() {
 
     private fun save() {
         val oldToken = Config.token
+        val oldChannel = Config.channel
         Config.token = etToken.text.toString()
         Config.channel = etChannel.text.toString()
         Config.dolaUrl = etUrl.text.toString()
         Config.pollSec = etPoll.text.toString().toIntOrNull() ?: 10
-        if (Config.token != oldToken) Config.lastMsgId = "0"
+        if (Config.token != oldToken || Config.channel != oldChannel) {
+            Config.lastMsgId = "0"
+            Config.processed = ""
+        }
     }
 
     private fun refresh() {

@@ -23,5 +23,8 @@ object Config {
     var lastMsgId: String
         get() = sp.getString("lastMsgId", "0") ?: "0"
         set(v) = sp.edit().putString("lastMsgId", v).apply()
+    var processed: String
+        get() = sp.getString("processed", "") ?: ""
+        set(v) = sp.edit().putString("processed", v).apply()
     fun ready(): Boolean = token.isNotEmpty() && channel.isNotEmpty()
 }
