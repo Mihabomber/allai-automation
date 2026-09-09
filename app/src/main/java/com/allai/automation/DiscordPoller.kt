@@ -103,7 +103,7 @@ object DiscordPoller {
             r.code !in 200..299 -> { BotLog.add("Discord: HTTP ${r.code}"); return null }
         }
         val arr = JSONArray(r.body)
-        val done = Config.processed.split(",").filter { it.isNotBlank() }.toMutableSet()
+        val done = Config.processed.split(",").filter { it.isNotBlank() }.toCollection(LinkedHashSet())
         var job: Job? = null
         var jobId = ""
         for (i in 0 until arr.length()) {
