@@ -44,6 +44,8 @@ class DolaAutomationService : AccessibilityService() {
 
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private val ocrExecutor = Executors.newSingleThreadExecutor()
+    private val dolaPkgGuesses = listOf("com.dola.ai", "ai.dola.app", "com.dola.android", "com.dolai.app", "app.dola")
+    @Volatile private var pkgListLogged = false
     private val watchWords = listOf("Смотреть видео", "Watch video")
     private val limitWords = listOf("лимит", "превышен", "подписк", "апгрейд", "достигнут", "попробуйте завтра", "попробуй позже", "limit reached", "upgrade")
 
@@ -77,8 +79,9 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun execute(job: DiscordPoller.Job): List<File> {
         ensureDolaApp()
-        waitChatReady(45_000)
+        Thread.sleep(2000)
         handleLogin()
+        waitChatReady(60_000)
         val prep = prepare(job)
         val out = ArrayList<File>()
         BotLog.add("Генерирую PART1")
@@ -164,21 +167,48 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun findDolaPkg(): String? {
         if (Config.dolaPkg.isNotEmpty() && packageManager.getLaunchIntentForPackage(Config.dolaPkg) != null) return Config.dolaPkg
-        val found = try {
-            val pkgs = packageManager.getInstalledPackages(0)
-            var hit: String? = null
-            for (info in pkgs) {
+        var hit: String? = null
+        try {
+            for (info in packageManager.getInstalledPackages(0)) {
                 val name = info.packageName ?: continue
                 if (name == packageName) continue
                 val label = try { packageManager.getApplicationLabel(info.applicationInfo).toString() } catch (e: Exception) { "" }
                 if (label.contains("dola", true) || name.contains("dola", true)) { hit = name; break }
             }
-            hit
-        } catch (e: Exception) {
-            null
+        } catch (e: Exception) {}
+        if (hit == null) {
+            try {
+                val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                for (ri in packageManager.queryIntentActivities(main, 0)) {
+                    val p = ri.activityInfo?.packageName ?: continue
+                    if (p == packageName) continue
+                    val label = try { ri.loadLabel(packageManager).toString() } catch (e: Exception) { "" }
+                    if (label.contains("dola", true) || p.contains("dola", true)) { hit = p; break }
+                }
+            } catch (e: Exception) {}
         }
-        if (found != null) Config.dolaPkg = found
-        return found
+        if (hit == null) {
+            for (g in dolaPkgGuesses) {
+                try {
+                    if (packageManager.getLaunchIntentForPackage(g) != null) { hit = g; break }
+                } catch (e: Exception) {}
+            }
+        }
+        if (hit != null) {
+            Config.dolaPkg = hit
+            BotLog.add("Найдено приложение Dola: $hit")
+        } else if (!pkgListLogged) {
+            pkgListLogged = true
+            BotLog.add("Dola не найден! Приложения на телефоне (укажи пакет Dola в поле «Пакет Dola»):")
+            try {
+                val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                packageManager.queryIntentActivities(main, 0).take(25).forEach {
+                    val label = try { it.loadLabel(packageManager).toString() } catch (e: Exception) { "?" }
+                    BotLog.add("• $label | ${it.activityInfo?.packageName ?: "?"}")
+                }
+            } catch (e: Exception) {}
+        }
+        return hit
     }
 
     private fun waitChatReady(timeout: Long) {
@@ -192,12 +222,32 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun handleLogin() {
-        if (findEditable() != null) return
-        if (!tapByText(LOGIN_BTNS.split("\u0000"), 6_000, optional = true)) return
-        BotLog.add("Вход: жму кнопку Google")
-        tapByText(GOOGLE_BTNS.split("\u0000"), 10_000)
-        pickGoogleAccount(30_000)
+        if (!loginVisible()) return
+        BotLog.add("Вижу экран входа — логинюсь через Google")
+        if (tapByText(LOGIN_BTNS.split("\u0000"), 8_000, optional = true)) {
+            if (tapByText(GOOGLE_BTNS.split("\u0000"), 12_000, optional = true)) {
+                pickGoogleAccount(60_000)
+                tapConsent(20_000)
+            }
+        }
         waitChatReady(120_000)
+    }
+
+    private fun loginVisible(): Boolean {
+        if (findNodes { matches(it, listOf("Войти", "Sign in", "Log in", "Sign In", "Продолжить с Google", "Вход через Google"), false) }.isNotEmpty()) return true
+        return screenHasText(listOf("Войти", "Sign in", "Log in"))
+    }
+
+    private fun tapConsent(timeout: Long) {
+        val end = System.currentTimeMillis() + timeout
+        while (System.currentTimeMillis() < end) {
+            checkStop()
+            if (tapByText(listOf("Продолжить", "I agree", "Согласен", "Соглашаюсь", "Далее"), 2_000, optional = true)) {
+                Thread.sleep(2500)
+            } else {
+                return
+            }
+        }
     }
 
     private fun pickGoogleAccount(timeout: Long) {

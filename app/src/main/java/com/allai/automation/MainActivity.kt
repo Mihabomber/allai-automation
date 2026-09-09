@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var etToken: EditText
     private lateinit var etChannel: EditText
     private lateinit var etUrl: EditText
+    private lateinit var etPkg: EditText
     private lateinit var etPoll: EditText
     private lateinit var logView: TextView
     private lateinit var scrollLog: ScrollView
@@ -62,7 +63,7 @@ class MainActivity : Activity() {
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         })
         header.addView(TextView(this).apply {
-            text = "  v1.4"; textSize = 12f; setTextColor(0xFF5B6B85.toInt())
+            text = "  v1.5"; textSize = 12f; setTextColor(0xFF5B6B85.toInt())
         })
         root.addView(header)
         root.addView(TextView(this).apply {
@@ -90,10 +91,11 @@ class MainActivity : Activity() {
         etToken = input("Discord токен (Authorization)")
         etChannel = input("ID канала / ЛС")
         etUrl = input("Ссылка Dola (резерв)")
+        etPkg = input("Пакет Dola (если сам не найдёт)")
         etPoll = input("Интервал опроса, сек").apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER }
         etToken.setText(Config.token); etChannel.setText(Config.channel)
-        etUrl.setText(Config.dolaUrl); etPoll.setText(Config.pollSec.toString())
-        settings.addView(etToken); settings.addView(etChannel); settings.addView(etUrl); settings.addView(etPoll)
+        etUrl.setText(Config.dolaUrl); etPkg.setText(Config.dolaPkg); etPoll.setText(Config.pollSec.toString())
+        settings.addView(etToken); settings.addView(etChannel); settings.addView(etUrl); settings.addView(etPkg); settings.addView(etPoll)
         val saveRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(10), 0, dp(10), 0) }
         saveRow.addView(btn("СОХРАНИТЬ", 0xFF2F6FED.toInt(), small = true).apply {
             setOnClickListener { save(); toast("Сохранено") }
@@ -193,6 +195,7 @@ class MainActivity : Activity() {
         Config.token = etToken.text.toString()
         Config.channel = etChannel.text.toString()
         Config.dolaUrl = etUrl.text.toString()
+        Config.dolaPkg = etPkg.text.toString()
         Config.pollSec = etPoll.text.toString().toIntOrNull() ?: 10
         if (Config.token != oldToken || Config.channel != oldChannel) {
             Config.lastMsgId = "0"
