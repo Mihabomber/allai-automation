@@ -253,7 +253,7 @@ class DolaAutomationService : AccessibilityService() {
         val ref = AtomicReference<Bitmap?>()
         val latch = CountDownLatch(1)
         takeScreenshot(Display.DEFAULT_DISPLAY, ocrExecutor, object : TakeScreenshotCallback {
-            override fun onScreenshotSuccess(result: ScreenshotResult) {
+            override fun onSuccess(result: ScreenshotResult) {
                 try {
                     val hw = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
                     ref.set(hw?.copy(Bitmap.Config.ARGB_8888, false))
@@ -263,7 +263,7 @@ class DolaAutomationService : AccessibilityService() {
                     latch.countDown()
                 }
             }
-            override fun onScreenshotFailed(errorCode: Int) {
+            override fun onFailure(errorCode: Int) {
                 latch.countDown()
             }
         })

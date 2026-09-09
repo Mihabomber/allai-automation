@@ -224,7 +224,7 @@ class MainActivity : Activity() {
 
     private fun btn(text: String, color: Int, small: Boolean = false, tiny: Boolean = false): Button = Button(this).apply {
         this.text = text
-        allCaps = false
+        setAllCaps(false)
         textSize = when { tiny -> 11f; small -> 12.5f; else -> 15f }
         setTextColor(0xFFFFFFFF.toInt())
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
