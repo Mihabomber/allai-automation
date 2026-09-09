@@ -14,7 +14,7 @@ android {
     }
     signingConfigs {
         create("allai") {
-            storeFile = file("allai.keystore")
+            storeFile = rootProject.file("allai.keystore")
             storePassword = "allai2026"
             keyAlias = "allai"
             keyPassword = "allai2026"
