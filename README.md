@@ -1,25 +1,35 @@
-# ALL AI Dola automation
+# 🤖 ALL AI — Dola automation
 
-## Поток (итоговый)
-1. Android-приложение ждет промпт в ЛС Discord (polling по токену).
-   Формат: `PART1:... | PART2:... | прозрачное фото для водяного знака`
-2. `DolaAutomationService` (AccessibilityService):
-   - открыть DolaAi -> Войти с Google -> выбрать аккаунт[N] на устройстве
-   - включить Pro модель
-   - вставить: `Generate video Dreamina Seedance 2.5 15 seconds\n{PART1}`
-   - OCR ждет статус генерации. При ЛЮБОЙ ошибке — слегка меняет промпт и ретраит.
-   - находит видео через OCR -> скачать в MediaStore
-   - сохраняет последний кадр (ffmpeg -sseof -1)
-   - Удаляет аккаунт (выход / clear app data) -> берет следующий аккаунт
-   - PART2 генерирует как Image-to-Video / с `первый кадр = last_frame_part1`
-3. Оба mp4 отправляются боту в Discord.
-4. Бот (серверная часть, python):
-   - склеить part1+part2 (ffmpeg concat)
-   - убрать водяной знак Dola (delogo / crop)
-   - наложить водяной знак `all ai` + прикрепленное прозрачное PNG, прыгающее по экрану (overlay с формулой x/y через sin/cos от t)
-   - вернуть готовое видео в Discord
-5. Поверх всех окон — всплывающее окно STOP (FloatingStopService, SYSTEM_ALERT_WINDOW) — останавливает цикл.
+![build](https://github.com/Mihabomber/allai-automation/actions/workflows/build-apk.yml/badge.svg)
 
-## Файлы скелета
-- `android/...` — Accessibility + Float stop + OCR helper
-- `bot/video_finalize.py` — склейка и водяной знак
+Автоматизация DolaAi на Android: Discord ЛС → генерация PART1/PART2 → склейка → замена водяного знака → возврат в Discord.
+
+## 📥 Скачать APK
+**Actions → последний успешный run → Artifact `app-debug`** → установить на телефон.
+
+## 📲 Настройка (важно, иначе вылет/не работает)
+1. Установи APK.
+2. Открой **ALL AI** → кнопка **1** → разреши *«Поверх других приложений»*.
+3. Кнопка **2** → Спец. возможности → включи **ALL AI / DolaAutomation**.
+4. Кнопка **3** → появится плавающая **■ STOP BOT**.
+
+## 🔁 Как работает
+```
+Discord ЛС [PART1]/[PART2] + png-лого
+  → DolaAi: Google-login → Pro → Generate (Seedance 2.5, 15s)
+  → OCR контроль → скачивание → последний кадр → PART2
+  → bot_video_finalize.py: concat + delogo Dola + прыгающий «all ai»
+```
+
+## 📁 Структура
+```
+app/src/main/java/com/allai/automation/
+  MainActivity.kt            — экран настройки, больше не падает
+  DolaAutomationService.kt   — Accessibility-автоклики
+  FloatingStopService.kt     — плавающий STOP
+  DiscordPoller.kt           — парсинг [PART1]/[PART2]
+bot_video_finalize.py        — склейка и водяной знак
+```
+
+## 🛠 Сборка
+Пуш в `main` → GitHub Actions собирает `app-debug.apk` автоматически.
