@@ -118,7 +118,7 @@ object DiscordPoller {
                 val id = arr.getJSONObject(i).getString("id")
                 if (id.toLong() <= jobId.toLong()) done.add(id)
             }
-            Config.processed = done.takeLast(60).joinToString(",")
+            Config.processed = done.toList().takeLast(60).joinToString(",")
         }
         if (job == null && arr.isNotEmpty()) {
             val now = System.currentTimeMillis()
