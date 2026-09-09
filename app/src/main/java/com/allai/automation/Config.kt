@@ -15,8 +15,11 @@ object Config {
         get() = sp.getString("channel", "") ?: ""
         set(v) = sp.edit().putString("channel", v.trim()).apply()
     var dolaUrl: String
-        get() = sp.getString("dolaUrl", "https://www.dolai.video/") ?: "https://www.dolai.video/"
+        get() = sp.getString("dolaUrl", "https://www.dola.com/chat/") ?: "https://www.dola.com/chat/"
         set(v) = sp.edit().putString("dolaUrl", v.trim()).apply()
+    var dolaPkg: String
+        get() = sp.getString("dolaPkg", "") ?: ""
+        set(v) = sp.edit().putString("dolaPkg", v.trim()).apply()
     var pollSec: Int
         get() = sp.getInt("pollSec", 10)
         set(v) = sp.edit().putInt("pollSec", v).apply()

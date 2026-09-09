@@ -34,14 +34,18 @@ class DolaAutomationService : AccessibilityService() {
     companion object {
         @Volatile var instance: DolaAutomationService? = null
         @Volatile var stopRequested = false
-        private const val LOGIN_BTNS = "Sign In\u0000Sign in\u0000Войти\u0000Log in"
-        private const val GOOGLE_BTNS = "Sign in with Google\u0000Continue with Google\u0000Войти через Google"
-        private const val GENERATE_BTNS = "Generate Video\u0000Generate\u0000Создать видео"
-        private const val DOWNLOAD_BTNS = "Download\u0000Скачать\u0000Save\u0000Сохранить"
+        private const val LOGIN_BTNS = "Sign In\u0000Sign in\u0000Войти\u0000Log in\u0000Войти через"
+        private const val GOOGLE_BTNS = "Sign in with Google\u0000Continue with Google\u0000Войти через Google\u0000Google"
+        private const val DOWNLOAD_BTNS = "Скачать\u0000Download\u0000Save\u0000Сохранить"
+        private const val READY = 0
+        private const val LIMIT = 1
+        private const val TIMEOUT = 2
     }
 
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private val ocrExecutor = Executors.newSingleThreadExecutor()
+    private val watchWords = listOf("Смотреть видео", "Watch video")
+    private val limitWords = listOf("лимит", "превышен", "подписк", "апгрейд", "достигнут", "попробуйте завтра", "попробуй позже", "limit reached", "upgrade")
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -72,59 +76,293 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun execute(job: DiscordPoller.Job): List<File> {
-        BotLog.add("Открываю Dola: ${Config.dolaUrl}")
-        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Config.dolaUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        Thread.sleep(6000)
-        checkStop()
-
-        waitForPromptField(30_000)
-        if (!promptVisible() && tapByText(LOGIN_BTNS.split("\u0000"), 8_000)) {
-            BotLog.add("Вход: жми кнопку Google")
-            tapByText(GOOGLE_BTNS.split("\u0000"), 10_000)
-            BotLog.add("Выбери аккаунт Google вручную, дальше сам")
-            waitForPromptField(180_000)
-        }
-        checkStop()
-        tapByText(listOf("Pro"), 4_000, optional = true)
-        tapByText(listOf("720p"), 3_000, optional = true)
-        tapByText(listOf("15s"), 3_000, optional = true)
-
+        ensureDolaApp()
+        waitChatReady(45_000)
+        handleLogin()
         val prep = prepare(job)
+        val out = ArrayList<File>()
         BotLog.add("Генерирую PART1")
-        val f1 = generate(job.part1, job.id, "part1", prep)
-        val out = mutableListOf(f1)
-
+        out.add(generateFlow(job.part1, "part1", prep))
         if (job.part2.isNotEmpty()) {
             checkStop()
             BotLog.add("Генерирую PART2")
-            val f2 = generate(job.part2, job.id, "part2", prep)
-            out.add(f2)
+            out.add(generateFlow(job.part2, "part2", prep))
         }
         BotLog.add("Задача выполнена: ${out.size} видео")
         return out
     }
 
-    private fun generate(prompt: String, jobId: String, tag: String, prep: Prep): File {
-        if (!typePrompt(prompt)) fail("Не нашёл поле Prompt")
+    private fun generateFlow(prompt: String, tag: String, prep: Prep): File {
+        var attempts = 0
+        while (attempts < 2) {
+            attempts++
+            checkStop()
+            sendViaPanel(prompt, prep)
+            BotLog.add("Жду генерацию ($tag)...")
+            when (waitReady(20 * 60_000)) {
+                READY -> {
+                    val f = watchAndDownload(tag) ?: fail("Видео не скачалось")
+                    BotLog.add("$tag готов: ${f.length() / 1024} KB")
+                    return f
+                }
+                else -> {
+                    BotLog.add("Лимит/сбой Dola — пересоздаю аккаунт (попытка $attempts)")
+                    rotateAccount()
+                }
+            }
+        }
+        fail("Не удалось сгенерировать $tag")
+    }
+
+    private fun sendViaPanel(prompt: String, prep: Prep) {
+        bringDolaToFront()
+        val cm = getSystemService(ClipboardManager::class.java)
+        cm.setPrimaryClip(ClipData.newPlainText("allai", prompt))
+        switchToPro()
+        openVideoPanel()
+        if (!typePrompt(prompt)) fail("Не нашёл поле ввода")
         prep.imgs.forEachIndexed { i, f ->
             BotLog.add("Креплю фото ${i + 1}")
-            attachPicker(f.name, listOf("Upload", "Upload image", "Choose image", "Add image", "Photo"))
+            attachPicker(f.name, listOf("Справочный", "Reference", "Upload", "Upload image", "Choose image", "Photo"))
         }
         prep.audio?.let {
             BotLog.add("Креплю аудио")
-            attachPicker(it.name, listOf("Choose audio", "Audio", "Аудио"))
+            attachPicker(it.name, listOf("Аудио", "Audio", "Choose audio"))
         }
-        if (!tapByText(GENERATE_BTNS.split("\u0000"), 12_000)) fail("Не нашёл кнопку Generate")
+        if (!sendPrompt()) fail("Не нашёл кнопку отправки")
+        Thread.sleep(4000)
         checkStop()
-        BotLog.add("Жду генерацию ($tag)...")
-        waitForText(listOf("Download", "Скачать"), 25 * 60_000)
+    }
+
+    private fun ensureDolaApp() {
+        launchDola()
+        Thread.sleep(5000)
         checkStop()
+    }
+
+    private fun bringDolaToFront() {
+        val root = rootInActiveWindow
+        val pkg = root?.packageName?.toString() ?: ""
+        if (Config.dolaPkg.isNotEmpty() && pkg == Config.dolaPkg) return
+        launchDola()
+        Thread.sleep(2500)
+        checkStop()
+    }
+
+    private fun launchDola() {
+        val pkg = findDolaPkg()
+        val intent = if (pkg != null) packageManager.getLaunchIntentForPackage(pkg) else null
+        if (intent != null) {
+            BotLog.add("Открываю приложение Dola ($pkg)")
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            startActivity(intent)
+        } else {
+            BotLog.add("Приложение Dola не найдено — открываю ссылку")
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Config.dolaUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+
+    private fun findDolaPkg(): String? {
+        if (Config.dolaPkg.isNotEmpty() && packageManager.getLaunchIntentForPackage(Config.dolaPkg) != null) return Config.dolaPkg
+        val found = try {
+            val pkgs = packageManager.getInstalledPackages(0)
+            var hit: String? = null
+            for (info in pkgs) {
+                val name = info.packageName ?: continue
+                if (name == packageName) continue
+                val label = try { packageManager.getApplicationLabel(info.applicationInfo).toString() } catch (e: Exception) { "" }
+                if (label.contains("dola", true) || name.contains("dola", true)) { hit = name; break }
+            }
+            hit
+        } catch (e: Exception) {
+            null
+        }
+        if (found != null) Config.dolaPkg = found
+        return found
+    }
+
+    private fun waitChatReady(timeout: Long) {
+        val end = System.currentTimeMillis() + timeout
+        while (System.currentTimeMillis() < end) {
+            checkStop()
+            if (findEditable() != null || screenHasText(listOf("Сообщение", "Опишите", "Создано ИИ"))) return
+            Thread.sleep(1500)
+        }
+        BotLog.add("Окно Dola не подтвердилось, продолжаю вслепую")
+    }
+
+    private fun handleLogin() {
+        if (findEditable() != null) return
+        if (!tapByText(LOGIN_BTNS.split("\u0000"), 6_000, optional = true)) return
+        BotLog.add("Вход: жму кнопку Google")
+        tapByText(GOOGLE_BTNS.split("\u0000"), 10_000)
+        pickGoogleAccount(30_000)
+        waitChatReady(120_000)
+    }
+
+    private fun pickGoogleAccount(timeout: Long) {
+        val end = System.currentTimeMillis() + timeout
+        while (System.currentTimeMillis() < end) {
+            checkStop()
+            val acc = findNodes {
+                val t = (it.text ?: "").toString()
+                t.contains("@gmail", true) || t.contains("googlemail", true)
+            }
+            if (acc.isNotEmpty()) {
+                val n = acc[0]
+                val ok = (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) ||
+                    clickableParent(n)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                if (ok) {
+                    BotLog.add("Выбран аккаунт Google")
+                    Thread.sleep(4000)
+                    return
+                }
+            }
+            if (ocrTapElement("@gmail")) {
+                BotLog.add("Выбран аккаунт Google (OCR)")
+                Thread.sleep(4000)
+                return
+            }
+            Thread.sleep(1500)
+        }
+    }
+
+    private fun switchToPro() {
+        if (proChipOn()) return
+        if (!tapByText(listOf("Fast", "Быстрый"), 5_000, optional = true)) return
+        Thread.sleep(1500)
+        if (!tapByText(listOf("Продвинутая модель", "Pro"), 6_000, optional = true)) {
+            BotLog.add("Пункт Pro не найден — работаю с текущим режимом")
+        }
+        Thread.sleep(2000)
+    }
+
+    private fun proChipOn(): Boolean {
+        val nodes = findNodes { n ->
+            val t = (n.text ?: "").toString().trim()
+            val d = (n.contentDescription ?: "").toString().trim()
+            t.startsWith("Pro") || d.startsWith("Pro") || t.equals("Pro", true) || d.equals("Pro", true)
+        }
+        return nodes.isNotEmpty()
+    }
+
+    private fun openVideoPanel() {
+        tapByText(listOf("Создание контента"), 6_000, optional = true)
+        Thread.sleep(1500)
+        tapExact(listOf("Видео"), 4_000, optional = true)
+        Thread.sleep(1200)
+    }
+
+    private fun waitReady(timeout: Long): Int {
+        val end = System.currentTimeMillis() + timeout
+        var lastLog = 0L
+        while (System.currentTimeMillis() < end) {
+            checkStop()
+            if (screenHasText(watchWords)) return READY
+            if (screenHasText(limitWords)) return LIMIT
+            if (System.currentTimeMillis() - lastLog > 60_000) {
+                BotLog.add("Всё ещё генерируется...")
+                lastLog = System.currentTimeMillis()
+            }
+            Thread.sleep(4000)
+        }
+        return TIMEOUT
+    }
+
+    private fun watchAndDownload(tag: String): File? {
         val before = System.currentTimeMillis() / 1000 - 5
-        if (!tapByText(DOWNLOAD_BTNS.split("\u0000"), 10_000)) fail("Не нашёл кнопку Download")
-        val dst = File(getExternalFilesDir("jobs"), "${jobId}_$tag.mp4")
-        val f = waitVideo(before, 8 * 60_000, dst) ?: fail("Видео не скачалось")
-        BotLog.add("$tag готов: ${f.length() / 1024} KB")
-        return f
+        if (!tapByText(watchWords, 12_000, optional = true)) {
+            BotLog.add("Нет «Смотреть видео» — пробую скачать из открытого окна")
+        }
+        Thread.sleep(5000)
+        checkStop()
+        val end = System.currentTimeMillis() + 6 * 60_000
+        while (System.currentTimeMillis() < end) {
+            checkStop()
+            tryDownloadInBrowser()
+            val dst = File(getExternalFilesDir("jobs"), "allai_$tag.mp4")
+            val f = waitVideo(before, 20_000, dst)
+            if (f != null) {
+                backToDola()
+                return f
+            }
+            Thread.sleep(2000)
+        }
+        return null
+    }
+
+    private fun tryDownloadInBrowser() {
+        val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString() ?: ""
+        val web = findNodes { it.className?.toString().equals("android.webkit.WebView", true) }.firstOrNull()
+        val isBrowser = pkg.contains("chrome", true) || pkg.contains("browser", true) || web != null
+        if (!isBrowser) return
+        if (tapByText(DOWNLOAD_BTNS.split("\u0000"), 1_500, optional = true)) {
+            Thread.sleep(2500)
+            return
+        }
+        val b = Rect()
+        if (web != null) web.getBoundsInScreen(b) else {
+            root.getBoundsInScreen(b)
+            b.top += (b.height() * 0.10).toInt()
+        }
+        tap(b.exactCenterX(), b.exactCenterY())
+        Thread.sleep(1000)
+        tap(b.left + b.width() * 0.90f, b.bottom - b.height() * 0.11f)
+        Thread.sleep(1500)
+        if (tapByText(DOWNLOAD_BTNS.split("\u0000"), 5_000, optional = true)) Thread.sleep(2500)
+    }
+
+    private fun backToDola() {
+        val pkg = if (Config.dolaPkg.isNotEmpty()) Config.dolaPkg else findDolaPkg()
+        val i = pkg?.let { packageManager.getLaunchIntentForPackage(it) }
+        if (i != null) {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            startActivity(i)
+            Thread.sleep(2500)
+        } else {
+            goBack()
+            goBack()
+        }
+    }
+
+    private fun goBack() {
+        try {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        } catch (_: Exception) {}
+        Thread.sleep(1200)
+    }
+
+    private fun rotateAccount() {
+        BotLog.add("Ротация: удаляю аккаунт Dola")
+        bringDolaToFront()
+        Thread.sleep(2000)
+        if (!tapDescOrText(listOf("Меню", "Menu", "Открыть меню", "navigation", "drawer"))) {
+            val scr = Rect()
+            rootInActiveWindow?.getBoundsInScreen(scr)
+            tap(scr.left + scr.width() * 0.065f, scr.top + scr.height() * 0.072f)
+        }
+        Thread.sleep(1800)
+        if (!tapDescOrText(listOf("Настройки", "Settings", "gear"))) {
+            val scr2 = Rect()
+            rootInActiveWindow?.getBoundsInScreen(scr2)
+            tap(scr2.left + scr2.width() * 0.77f, scr2.top + scr2.height() * 0.765f)
+        }
+        Thread.sleep(1800)
+        if (!tapByText(listOf("Аккаунт Dola"), 8_000)) fail("Не нашёл «Аккаунт Dola»")
+        if (!tapByText(listOf("Удалить учетную запись"), 8_000)) fail("Не нашёл «Удалить учетную запись»")
+        Thread.sleep(1200)
+        if (!tapExact(listOf("Удалить"), 8_000)) fail("Не подтвердил удаление")
+        Thread.sleep(1500)
+        if (!tapByText(listOf("Удалить сейчас"), 10_000, optional = true) && !ocrTapElement("Удалить сейчас")) {
+            fail("Не нашёл «Удалить сейчас»")
+        }
+        BotLog.add("Аккаунт удалён — жду пересоздания")
+        Thread.sleep(6000)
+        tapByText(listOf("Продолжить", "Continue", "Начать", "Get started"), 5_000, optional = true)
+        handleLogin()
+        waitChatReady(90_000)
+        BotLog.add("Новый аккаунт готов")
     }
 
     private fun checkStop() {
@@ -225,38 +463,66 @@ class DolaAutomationService : AccessibilityService() {
         throw RuntimeException(msg)
     }
 
-    private fun promptVisible(): Boolean = findEditable() != null || screenHasText(listOf("Prompt", "Промпт"))
-
-    private fun waitForPromptField(timeout: Long) {
-        val end = System.currentTimeMillis() + timeout
-        while (System.currentTimeMillis() < end) {
-            checkStop()
-            if (promptVisible()) return
-            Thread.sleep(1500)
-        }
-        BotLog.add("Поле Prompt не найдено, продолжаю вслепую")
-    }
-
     private fun findEditable(): AccessibilityNodeInfo? {
         val list = findNodes { it.isEditable }
         return list.firstOrNull { it.className?.toString() == "android.widget.EditText" } ?: list.firstOrNull()
     }
 
+    private fun findPromptField(): AccessibilityNodeInfo? {
+        val edits = findNodes { it.isEditable }
+        return edits.firstOrNull {
+            val t = (it.text ?: "").toString() + (it.hintText ?: "")
+            t.contains("Опишите", true) || t.contains("видео, которое", true)
+        } ?: edits.lastOrNull()
+    }
+
     private fun typePrompt(prompt: String): Boolean {
-        var n = findEditable()
-        if (n == null) {
-            if (ocrTapElement("Prompt|Промпт")) {
-                Thread.sleep(800)
-                n = findNodes { it.isEditable && it.isFocused }.firstOrNull() ?: findEditable()
-            }
+        var n = findPromptField()
+        if (n == null && ocrTapElement("Опишите видео|Опишите|Describe")) {
+            Thread.sleep(900)
+            n = findPromptField()
         }
+        if (n == null) n = findEditable()
         if (n == null) return false
         val args = Bundle()
         args.putCharSequence("ACTION_ARGUMENT_SET_TEXT_CHAR_SEQUENCE", prompt)
         if (n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true
-        val cm = getSystemService(ClipboardManager::class.java)
-        cm.setPrimaryClip(ClipData.newPlainText("allai", prompt))
         return n.performAction(AccessibilityNodeInfo.ACTION_PASTE, Bundle())
+    }
+
+    private fun sendPrompt(): Boolean {
+        val keys = listOf("Отправить", "Send", "Отправить сообщение", "Send message", "Отправка", "Submit")
+        val nodes = findNodes { n ->
+            val d = (n.contentDescription ?: "").toString()
+            val t = (n.text ?: "").toString()
+            keys.any { d.equals(it, true) || t.equals(it, true) }
+        }
+        for (n in nodes) {
+            if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                BotLog.add("Отправлено")
+                return true
+            }
+            val p = clickableParent(n)
+            if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                BotLog.add("Отправлено")
+                return true
+            }
+        }
+        val field = findPromptField() ?: findEditable()
+        if (field != null) {
+            val b = Rect()
+            field.getBoundsInScreen(b)
+            val scr = Rect()
+            rootInActiveWindow?.getBoundsInScreen(scr)
+            if (scr.width() > 0) {
+                val x = b.right + b.height() * 0.9f
+                val cx = if (x < scr.right - 30f) x else scr.right - 40f
+                tap(cx, b.exactCenterY())
+                BotLog.add("Отправлено (координаты)")
+                return true
+            }
+        }
+        return false
     }
 
     private fun findNodes(root: AccessibilityNodeInfo? = rootInActiveWindow, pred: (AccessibilityNodeInfo) -> Boolean): List<AccessibilityNodeInfo> {
@@ -318,25 +584,58 @@ class DolaAutomationService : AccessibilityService() {
         return false
     }
 
+    private fun tapExact(strs: List<String>, timeout: Long, optional: Boolean = false): Boolean {
+        val end = System.currentTimeMillis() + timeout
+        while (System.currentTimeMillis() < end) {
+            checkStop()
+            val nodes = findNodes { n ->
+                val t = (n.text ?: "").toString().trim()
+                strs.any { t.equals(it, true) }
+            }
+            for (n in nodes) {
+                if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                val p = clickableParent(n)
+                if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            }
+            if (nodes.isNotEmpty()) {
+                val b = Rect(); nodes[0].getBoundsInScreen(b)
+                tap(b.exactCenterX(), b.exactCenterY())
+                return true
+            }
+            Thread.sleep(1200)
+        }
+        if (!optional) BotLog.add("Не нашёл точно: ${strs.joinToString("/")}")
+        return false
+    }
+
+    private fun tapDescOrText(keys: List<String>, timeout: Long = 4_000): Boolean {
+        val end = System.currentTimeMillis() + timeout
+        while (System.currentTimeMillis() < end) {
+            checkStop()
+            val nodes = findNodes { n ->
+                val d = (n.contentDescription ?: "").toString()
+                val t = (n.text ?: "").toString()
+                keys.any { d.contains(it, true) || t.contains(it, true) }
+            }
+            for (n in nodes) {
+                if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                val p = clickableParent(n)
+                if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            }
+            if (nodes.isNotEmpty()) {
+                val b = Rect(); nodes[0].getBoundsInScreen(b)
+                tap(b.exactCenterX(), b.exactCenterY())
+                return true
+            }
+            Thread.sleep(1000)
+        }
+        return false
+    }
+
     private fun screenHasText(strs: List<String>): Boolean {
         if (findNodes { matches(it, strs, false) }.isNotEmpty()) return true
         val ocr = ocrText() ?: return false
         return strs.any { ocr.contains(it, true) }
-    }
-
-    private fun waitForText(strs: List<String>, timeout: Long) {
-        val end = System.currentTimeMillis() + timeout
-        var lastLog = 0L
-        while (System.currentTimeMillis() < end) {
-            checkStop()
-            if (screenHasText(strs)) return
-            if (System.currentTimeMillis() - lastLog > 60_000) {
-                BotLog.add("Всё ещё генерируется...")
-                lastLog = System.currentTimeMillis()
-            }
-            Thread.sleep(4000)
-        }
-        fail("Таймаут ожидания: ${strs.joinToString("/")}")
     }
 
     private fun tap(x: Float, y: Float): Boolean {
@@ -388,7 +687,7 @@ class DolaAutomationService : AccessibilityService() {
             return false
         }
         val re = Regex(pattern, RegexOption.IGNORE_CASE)
-        for (b in res.textBlocks) for (l in b.lines) for (el in l.elements) {
+        for (bl in res.textBlocks) for (l in bl.lines) for (el in l.elements) {
             if (re.containsMatchIn(el.text)) {
                 val bb = el.boundingBox ?: continue
                 tap(bb.exactCenterX(), bb.exactCenterY())

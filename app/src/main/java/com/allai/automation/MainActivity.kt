@@ -62,7 +62,7 @@ class MainActivity : Activity() {
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         })
         header.addView(TextView(this).apply {
-            text = "  v1.2"; textSize = 12f; setTextColor(0xFF5B6B85.toInt())
+            text = "  v1.4"; textSize = 12f; setTextColor(0xFF5B6B85.toInt())
         })
         root.addView(header)
         root.addView(TextView(this).apply {
@@ -89,7 +89,7 @@ class MainActivity : Activity() {
         val settings = card()
         etToken = input("Discord токен (Authorization)")
         etChannel = input("ID канала / ЛС")
-        etUrl = input("Ссылка Dola")
+        etUrl = input("Ссылка Dola (резерв)")
         etPoll = input("Интервал опроса, сек").apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER }
         etToken.setText(Config.token); etChannel.setText(Config.channel)
         etUrl.setText(Config.dolaUrl); etPoll.setText(Config.pollSec.toString())
