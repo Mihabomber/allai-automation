@@ -14,6 +14,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
@@ -26,6 +28,7 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
@@ -35,7 +38,7 @@ class DolaAutomationService : AccessibilityService() {
         @Volatile var instance: DolaAutomationService? = null
         @Volatile var stopRequested = false
         private const val LOGIN_BTNS = "Войти\u0000Войдите\u0000Вход\u0000Sign In\u0000Sign in\u0000Log in"
-        private const val GOOGLE_BTNS = "Продолжить с Google\u0000Продолжить через Google\u0000Войти через Google\u0000Sign in with Google\u0000Continue with Google\u0000Google"
+        private const val GOOGLE_BTNS = "Продолжить с Google\u0000Продолжить через Google\u0000Войти через Google\u0000Sign in with Google\u0000Continue with Google"
         private const val DOWNLOAD_BTNS = "Скачать\u0000Download\u0000Save\u0000Сохранить"
         private const val READY = 0
         private const val LIMIT = 1
@@ -44,6 +47,7 @@ class DolaAutomationService : AccessibilityService() {
 
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private val ocrExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val dolaPkgGuesses = listOf("com.dola.ai", "ai.dola.app", "com.dola.android", "com.dolai.app", "app.dola")
     @Volatile private var pkgListLogged = false
     private val watchWords = listOf("Смотреть видео", "Watch video")
@@ -760,21 +764,34 @@ class DolaAutomationService : AccessibilityService() {
         return null
     }
 
+    private fun smallestNode(nodes: List<AccessibilityNodeInfo>): AccessibilityNodeInfo {
+        return nodes.minByOrNull { n ->
+            val b = Rect()
+            n.getBoundsInScreen(b)
+            val a = b.width() * b.height()
+            if (a <= 0) Int.MAX_VALUE else a
+        } ?: nodes[0]
+    }
+
+    private fun clickNode(n: AccessibilityNodeInfo): Boolean {
+        val b = Rect()
+        n.getBoundsInScreen(b)
+        if (b.width() < 8 || b.height() < 8) {
+            val p = clickableParent(n)
+            if (p != null) p.getBoundsInScreen(b)
+        }
+        if (b.width() < 8 || b.height() < 8) return false
+        try { n.performAction(AccessibilityNodeInfo.ACTION_CLICK) } catch (_: Exception) {}
+        try { clickableParent(n)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) } catch (_: Exception) {}
+        return tap(b.exactCenterX(), b.exactCenterY())
+    }
+
     private fun tapByText(strs: List<String>, timeout: Long, optional: Boolean = false): Boolean {
         val end = System.currentTimeMillis() + timeout
         while (System.currentTimeMillis() < end) {
             checkStop()
             val nodes = findNodes { matches(it, strs, false) }
-            for (n in nodes) {
-                if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                val p = clickableParent(n)
-                if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-            }
-            if (nodes.isNotEmpty()) {
-                val b = Rect(); nodes[0].getBoundsInScreen(b)
-                tap(b.exactCenterX(), b.exactCenterY())
-                return true
-            }
+            if (nodes.isNotEmpty() && clickNode(smallestNode(nodes))) return true
             if (ocrTapElement(strs.joinToString("|"))) return true
             Thread.sleep(1200)
         }
@@ -790,16 +807,7 @@ class DolaAutomationService : AccessibilityService() {
                 val t = (n.text ?: "").toString().trim()
                 strs.any { t.equals(it, true) }
             }
-            for (n in nodes) {
-                if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                val p = clickableParent(n)
-                if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-            }
-            if (nodes.isNotEmpty()) {
-                val b = Rect(); nodes[0].getBoundsInScreen(b)
-                tap(b.exactCenterX(), b.exactCenterY())
-                return true
-            }
+            if (nodes.isNotEmpty() && clickNode(smallestNode(nodes))) return true
             Thread.sleep(1200)
         }
         if (!optional) BotLog.add("Не нашёл точно: ${strs.joinToString("/")}")
@@ -815,16 +823,7 @@ class DolaAutomationService : AccessibilityService() {
                 val t = (n.text ?: "").toString()
                 keys.any { d.contains(it, true) || t.contains(it, true) }
             }
-            for (n in nodes) {
-                if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                val p = clickableParent(n)
-                if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-            }
-            if (nodes.isNotEmpty()) {
-                val b = Rect(); nodes[0].getBoundsInScreen(b)
-                tap(b.exactCenterX(), b.exactCenterY())
-                return true
-            }
+            if (nodes.isNotEmpty() && clickNode(smallestNode(nodes))) return true
             Thread.sleep(1000)
         }
         return false
@@ -840,9 +839,9 @@ class DolaAutomationService : AccessibilityService() {
         val p = Path()
         p.moveTo(x, y)
         val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(p, 0, 60))
+            .addStroke(GestureDescription.StrokeDescription(p, 0, 120))
             .build()
-        return dispatchGesture(g, null, null)
+        return dispatchAndWait(g, 1500)
     }
 
     private fun longPress(x: Float, y: Float): Boolean {
@@ -851,7 +850,7 @@ class DolaAutomationService : AccessibilityService() {
         val g = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(p, 0, 900))
             .build()
-        return dispatchGesture(g, null, null)
+        return dispatchAndWait(g, 2500)
     }
 
     private fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, dur: Long): Boolean {
@@ -861,7 +860,28 @@ class DolaAutomationService : AccessibilityService() {
         val g = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(p, 0, dur))
             .build()
-        return dispatchGesture(g, null, null)
+        return dispatchAndWait(g, dur + 1500)
+    }
+
+    private fun dispatchAndWait(g: GestureDescription, waitMs: Long): Boolean {
+        val latch = CountDownLatch(1)
+        val ok = AtomicBoolean(false)
+        val run = Runnable {
+            val posted = dispatchGesture(g, object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    ok.set(true)
+                    latch.countDown()
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    latch.countDown()
+                }
+            }, null)
+            if (!posted) latch.countDown()
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) run.run() else mainHandler.post(run)
+        latch.await(waitMs, TimeUnit.MILLISECONDS)
+        Thread.sleep(120)
+        return ok.get()
     }
 
     private fun screenshot(): Bitmap? {
