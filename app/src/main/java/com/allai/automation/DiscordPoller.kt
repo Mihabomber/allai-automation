@@ -1,50 +1,101 @@
 package com.allai.automation
 
 import kotlin.concurrent.thread
+import okhttp3.Dns
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.DataOutputStream
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
+import java.net.InetAddress
+import java.net.UnknownHostException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 object DiscordPoller {
     @Volatile var stopRequested = false
     private const val API = "https://discord.com/api/v10"
-    private val UA = "Mozilla/5.0 (Linux; Android 14) allai/1.3"
+    private val UA = "Mozilla/5.0 (Linux; Android 14) allai/1.8"
     @Volatile private var lastEmptyLog = 0L
 
     private class HttpResult(val code: Int, val body: String)
 
-    private fun conn(path: String): HttpURLConnection {
-        val c = URL(API + path).openConnection() as HttpURLConnection
-        c.setRequestProperty("Authorization", Config.token)
-        c.setRequestProperty("User-Agent", UA)
-        c.connectTimeout = 10000
-        c.readTimeout = 15000
-        return c
+    private val rawClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .dns(DohDns)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    object DohDns : Dns {
+        private val cache = ConcurrentHashMap<String, List<InetAddress>>()
+        override fun lookup(hostname: String): List<InetAddress> {
+            try {
+                val r = Dns.SYSTEM.lookup(hostname)
+                cache[hostname] = r
+                return r
+            } catch (e: UnknownHostException) {
+                cache[hostname]?.let { return it }
+            }
+            val ip = dohResolve(hostname)
+            if (ip != null) {
+                val ia = InetAddress.getByAddress(hostname, InetAddress.getByName(ip).address)
+                val list = listOf(ia)
+                cache[hostname] = list
+                BotLog.add("DoH: системный DNS не работает — $hostname → $ip (запасной)")
+                return list
+            }
+            throw UnknownHostException(hostname)
+        }
+
+        private fun dohResolve(host: String): String? {
+            for (base in listOf("https://1.1.1.1/dns-query?name=", "https://8.8.8.8/resolve?name=")) {
+                try {
+                    val req = Request.Builder()
+                        .url(base + java.net.URLEncoder.encode(host, "UTF-8") + "&type=A")
+                        .header("Accept", "application/dns-json")
+                        .build()
+                    rawClient.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@use
+                        val body = resp.body?.string() ?: return@use
+                        val arr = JSONObject(body).optJSONArray("Answer") ?: return@use
+                        for (i in 0 until arr.length()) {
+                            val o = arr.getJSONObject(i)
+                            if (o.optInt("type") == 1) return o.optString("data")
+                        }
+                    }
+                } catch (e: Exception) {}
+            }
+            return null
+        }
     }
 
+    private fun req(path: String): Request.Builder = Request.Builder()
+        .url(API + path)
+        .header("Authorization", Config.token)
+        .header("User-Agent", UA)
+
     private fun get(path: String): HttpResult = try {
-        val c = conn(path)
-        val code = c.responseCode
-        val body = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.readText() ?: ""
-        c.disconnect()
-        HttpResult(code, body)
+        client.newCall(req(path).get().build()).execute().use { r ->
+            HttpResult(r.code, r.body?.string() ?: "")
+        }
     } catch (e: Exception) {
         HttpResult(-1, e.message ?: "network")
     }
 
     private fun post(path: String, json: String): HttpResult = try {
-        val c = conn(path)
-        c.requestMethod = "POST"
-        c.setRequestProperty("Content-Type", "application/json")
-        c.doOutput = true
-        c.outputStream.write(json.toByteArray())
-        val code = c.responseCode
-        val body = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.readText() ?: ""
-        c.disconnect()
-        HttpResult(code, body)
+        val b = json.toRequestBody("application/json".toMediaType())
+        client.newCall(req(path).post(b).build()).execute().use { r ->
+            HttpResult(r.code, r.body?.string() ?: "")
+        }
     } catch (e: Exception) {
         HttpResult(-1, e.message ?: "network")
     }
@@ -193,21 +244,18 @@ object DiscordPoller {
 
     fun sendVideo(channel: String, text: String, file: File): Boolean {
         return try {
-            val boundary = "----allai${System.currentTimeMillis()}"
-            val c = conn("/channels/$channel/messages")
-            c.requestMethod = "POST"
-            c.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-            c.doOutput = true
-            val out = DataOutputStream(c.outputStream)
-            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n${JSONObject().put("content", text)}\r\n")
-            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"${file.name}\"\r\nContent-Type: video/mp4\r\n\r\n")
-            file.inputStream().use { it.copyTo(out, 65536) }
-            out.writeBytes("\r\n--$boundary--\r\n")
-            out.flush()
-            val code = c.responseCode
-            if (code !in 200..299) BotLog.add("Загрузка видео: HTTP $code (лимит Discord?)")
-            c.disconnect()
-            code in 200..299
+            val payload = JSONObject().put("content", text).toString().toRequestBody("application/json".toMediaType())
+            val mp = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("payload_json", null, payload)
+                .addFormDataPart("files[0]", file.name, file.asRequestBody("video/mp4".toMediaType()))
+                .build()
+            client.newCall(req("/channels/$channel/messages").post(mp).build()).execute().use { r ->
+                val ok = r.code in 200..299
+                if (!ok) BotLog.add("Загрузка видео: HTTP ${r.code} (лимит Discord?)")
+                r.body?.string()
+                ok
+            }
         } catch (e: Exception) {
             BotLog.add("Загрузка видео: ${e.message}")
             false
@@ -215,13 +263,18 @@ object DiscordPoller {
     }
 
     fun download(url: String, dst: File): Boolean = try {
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.setRequestProperty("User-Agent", UA)
-        c.connectTimeout = 15000
-        c.readTimeout = 30000
-        dst.outputStream().use { o -> c.inputStream.use { it.copyTo(o, 65536) } }
-        c.disconnect()
-        dst.length() > 0
+        val c = Request.Builder().url(url).header("User-Agent", UA).build()
+        client.newCall(c).execute().use { r ->
+            if (!r.isSuccessful) {
+                BotLog.add("Скачивание файла: HTTP ${r.code}")
+                false
+            } else {
+                r.body?.byteStream()?.use { input ->
+                    dst.outputStream().use { input.copyTo(it, 65536) }
+                }
+                dst.length() > 0
+            }
+        }
     } catch (e: Exception) {
         BotLog.add("Скачивание файла: ${e.message}")
         false
