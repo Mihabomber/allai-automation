@@ -1,0 +1,10 @@
+plugins { id("com.android.application") }
+android {
+    namespace = "com.allai.automation"
+    compileSdk = 34
+    defaultConfig {
+        applicationId = "com.allai.automation"
+        minSdk = 26; targetSdk = 34; versionCode = 1; versionName = "1.0"
+    }
+}
+dependencies { implementation("com.google.mlkit:text-recognition:16.0.1") }
