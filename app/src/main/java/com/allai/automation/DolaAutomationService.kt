@@ -34,7 +34,7 @@ class DolaAutomationService : AccessibilityService() {
     companion object {
         @Volatile var instance: DolaAutomationService? = null
         @Volatile var stopRequested = false
-        private const val LOGIN_BTNS = "Sign In\u0000Sign in\u0000Войти\u0000Log in\u0000Вход"
+        private const val LOGIN_BTNS = "Войти\u0000Войдите\u0000Вход\u0000Sign In\u0000Sign in\u0000Log in"
         private const val GOOGLE_BTNS = "Продолжить с Google\u0000Продолжить через Google\u0000Войти через Google\u0000Sign in with Google\u0000Continue with Google\u0000Google"
         private const val DOWNLOAD_BTNS = "Скачать\u0000Download\u0000Save\u0000Сохранить"
         private const val READY = 0
@@ -227,11 +227,18 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun handleLogin() {
         if (!loginVisible()) return
-        BotLog.add("Вижу экран входа — логинюсь через Google")
-        if (tapByText(LOGIN_BTNS.split("\u0000"), 10_000, optional = true)) Thread.sleep(1500)
-        if (!tapByText(GOOGLE_BTNS.split("\u0000"), 30_000, optional = true)) {
-            BotLog.add("Кнопку Google не нашёл — нажми её сам, дальше сам")
+        BotLog.add("Вижу экран входа — жму «Продолжить с Google»")
+        if (!tapByText(GOOGLE_BTNS.split("\u0000"), 15_000, optional = true)) {
+            if (!ocrTapElement("Google")) {
+                val scr = Rect()
+                rootInActiveWindow?.getBoundsInScreen(scr)
+                if (scr.height() > 0) {
+                    BotLog.add("Жму кнопку Google по координатам")
+                    tap(scr.left + scr.width() * 0.5f, scr.top + scr.height() * 0.545f)
+                }
+            }
         }
+        Thread.sleep(2000)
         pickGoogleAccount(60_000)
         tapConsent(30_000)
         waitChatReady(180_000, retryLogin = false)
@@ -239,8 +246,9 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun loginVisible(): Boolean {
-        if (findNodes { matches(it, listOf("Войти", "Sign in", "Log in", "Sign In", "Продолжить с Google", "Вход через Google"), false) }.isNotEmpty()) return true
-        return screenHasText(listOf("Войти", "Sign in", "Log in"))
+        val keys = listOf("Войти", "Войдите", "Вход", "Sign in", "Sign In", "Log in", "Log In", "Продолжить с Google", "Продолжить на телефоне", "Продолжить с Facebook", "Вход через Google")
+        if (findNodes { matches(it, keys, false) }.isNotEmpty()) return true
+        return screenHasText(listOf("Войдите", "Войти", "Sign in", "Log in", "Продолжить с Google"))
     }
 
     private fun tapConsent(timeout: Long) {
@@ -765,6 +773,13 @@ class DolaAutomationService : AccessibilityService() {
             return false
         }
         val re = Regex(pattern, RegexOption.IGNORE_CASE)
+        for (bl in res.textBlocks) for (l in bl.lines) {
+            if (re.containsMatchIn(l.text)) {
+                val bb = l.boundingBox ?: continue
+                tap(bb.exactCenterX(), bb.exactCenterY())
+                return true
+            }
+        }
         for (bl in res.textBlocks) for (l in bl.lines) for (el in l.elements) {
             if (re.containsMatchIn(el.text)) {
                 val bb = el.boundingBox ?: continue

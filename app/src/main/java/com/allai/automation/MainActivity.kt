@@ -63,7 +63,7 @@ class MainActivity : Activity() {
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         })
         header.addView(TextView(this).apply {
-            text = "  v1.6"; textSize = 12f; setTextColor(0xFF5B6B85.toInt())
+            text = "  v1.7"; textSize = 12f; setTextColor(0xFF5B6B85.toInt())
         })
         root.addView(header)
         root.addView(TextView(this).apply {
