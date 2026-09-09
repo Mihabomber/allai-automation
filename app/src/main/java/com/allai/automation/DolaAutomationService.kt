@@ -48,7 +48,7 @@ class DolaAutomationService : AccessibilityService() {
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private val ocrExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
-    private val dolaPkgGuesses = listOf("com.dola.ai", "ai.dola.app", "com.dola.android", "com.dolai.app", "app.dola")
+    private val dolaPkgGuesses = listOf("com.larus.wolf", "com.dola.ai", "ai.dola.app", "com.dola.android", "com.dolai.app", "app.dola")
     @Volatile private var pkgListLogged = false
     private val watchWords = listOf("Смотреть видео", "Watch video")
     private val limitWords = listOf("лимит", "превышен", "подписк", "апгрейд", "достигнут", "попробуйте завтра", "попробуй позже", "limit reached", "upgrade")
@@ -85,9 +85,8 @@ class DolaAutomationService : AccessibilityService() {
         ensureDolaApp()
         Thread.sleep(3000)
         handleLogin()
-        waitChatReady(90_000)
-        handleLogin()
         handleBirthday()
+        waitChatReady(30_000, retryLogin = false)
         val prep = prepare(job)
         val out = ArrayList<File>()
         BotLog.add("Генерирую PART1")
@@ -222,127 +221,96 @@ class DolaAutomationService : AccessibilityService() {
         val end = System.currentTimeMillis() + timeout
         while (System.currentTimeMillis() < end) {
             checkStop()
-            val hasField = findEditable() != null || screenHasText(listOf("Сообщение", "Опишите", "Создано ИИ"))
-            if (hasField && !loginVisible()) return
-            if (retryLogin && loginVisible()) handleLogin()
+            if (findEditable() != null) return
+            if (screenHasText(listOf("Сообщение", "Опишите видео", "Создано ИИ"))) return
             Thread.sleep(1500)
         }
-        BotLog.add("Окно Dola не подтвердилось, продолжаю вслепую")
+        BotLog.add("Окно Dola не подтвердилось, продолжаю")
     }
 
     private fun handleLogin() {
         if (!loginVisible()) return
         BotLog.add("Вижу экран входа — жму «Продолжить с Google»")
-        if (tapByText(GOOGLE_BTNS.split("\u0000"), 15_000, optional = true)) {
+        if (tapByText(GOOGLE_BTNS.split("\u0000"), 12_000, optional = true)) {
             BotLog.add("Нажал «Продолжить с Google»")
-        } else if (ocrTapElement("Google")) {
+        } else if (ocrTapElement("Продолжить с Google|Continue with Google")) {
             BotLog.add("Нажал «Продолжить с Google» (OCR)")
         } else {
             val scr = Rect()
             rootInActiveWindow?.getBoundsInScreen(scr)
             if (scr.height() > 0) {
                 BotLog.add("Жму кнопку Google по координатам")
-                tap(scr.left + scr.width() * 0.5f, scr.top + scr.height() * 0.545f)
+                tap(scr.left + scr.width() * 0.5f, scr.top + scr.height() * 0.58f)
             }
         }
+        Thread.sleep(2500)
+        pickGoogleAccount(25_000)
         Thread.sleep(2000)
-        pickGoogleAccount(90_000)
-        tapConsent(30_000)
-        handleBirthday()
-        waitChatReady(180_000, retryLogin = false)
-        if (loginVisible()) {
-            fail("Вход в Dola не удался — сделай вручную: «Продолжить с Google» → выбери аккаунт, потом снова запусти бота")
-        }
-        BotLog.add("Вход завершён")
+        tapExact(listOf("Продолжить", "Далее", "Согласен", "I agree"), 5_000, optional = true)
+        BotLog.add("Вход: шаг Google пройден")
     }
 
     private fun birthdayVisible(): Boolean {
-        val keys = listOf("дата рождения", "Дата рождения", "date of birth", "Date of Birth", "Год", "год")
+        val keys = listOf("дата рождения", "Дата рождения", "date of birth", "Date of Birth", "Выберите дату")
         if (findNodes { matches(it, keys, false) }.isNotEmpty()) return true
-        return screenHasText(listOf("дата рождения", "Дата рождения", "date of birth"))
+        return screenHasText(listOf("дата рождения", "Дата рождения", "date of birth", "Выберите дату"))
     }
 
     private fun handleBirthday() {
-        val deadline = System.currentTimeMillis() + 25_000
-        var seen = false
-        while (System.currentTimeMillis() < deadline) {
-            checkStop()
-            if (birthdayVisible()) {
-                seen = true
-                break
-            }
+        if (!birthdayVisible()) {
             Thread.sleep(1500)
+            if (!birthdayVisible()) return
         }
-        if (!seen) return
-        BotLog.add("Экран даты рождения — прокручиваю год к 2000")
-        if (!scrollForText("2000", 30)) {
-            BotLog.add("Не нашёл 2000 — выбери год сам, я жду 10с")
-            var t = 0
-            while (t < 10) {
-                checkStop()
-                Thread.sleep(1000)
-                t++
-                if (findNodes { (it.text ?: "").toString().trim() == "2000" }.isNotEmpty()) t = 10
-            }
-        }
-        Thread.sleep(1200)
-        tapByText(listOf("Далее", "Готово", "ОК", "OK", "Подтвердить", "Продолжить", "Сохранить", "Done", "Next"), 12_000, optional = true)
-        Thread.sleep(2000)
+        BotLog.add("Экран даты рождения — кручу год до 2000")
+        if (!scrollYearTo2000()) BotLog.add("2000 не найден — продолжаю")
+        Thread.sleep(800)
+        tapExact(listOf("Далее", "Готово", "ОК", "OK", "Подтвердить", "Сохранить", "Done", "Next"), 8_000, optional = true)
+        Thread.sleep(1500)
         BotLog.add("Дату рождения прошёл")
     }
 
-    private fun scrollForText(pattern: String, maxSwipes: Int): Boolean {
-        val re = Regex(pattern)
+    private fun scrollYearTo2000(): Boolean {
         val scr = Rect()
-        for (dir in listOf(1, 0)) {
-            for (i in 0 until maxSwipes) {
-                checkStop()
-                val hit = findNodes { re.matches((it.text ?: "").toString().trim()) }
-                if (hit.isNotEmpty()) {
-                    val n = hit[0]
-                    if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                    val p = clickableParent(n)
-                    if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                    val b = Rect()
-                    n.getBoundsInScreen(b)
-                    tap(b.exactCenterX(), b.exactCenterY())
-                    return true
-                }
-                if (ocrTapElement("\\b" + pattern + "\\b")) return true
-                rootInActiveWindow?.getBoundsInScreen(scr)
-                if (scr.height() == 0) continue
-                val cx = scr.exactCenterX()
-                val yTop = scr.bottom - scr.height() * 0.30f
-                val yBottom = scr.bottom - scr.height() * 0.60f
-                if (dir == 1) swipe(cx, yTop, cx, yBottom, 350) else swipe(cx, yBottom, cx, yTop, 350)
-                Thread.sleep(1200)
+        rootInActiveWindow?.getBoundsInScreen(scr) ?: return false
+        if (scr.height() == 0) return false
+        val xYear = scr.left + scr.width() * 0.78f
+        val y1 = scr.top + scr.height() * 0.48f
+        val y2 = scr.top + scr.height() * 0.62f
+        var i = 0
+        while (i < 28) {
+            checkStop()
+            if (findNodes { (it.text ?: "").toString().trim() == "2000" }.isNotEmpty()) {
+                val n = findNodes { (it.text ?: "").toString().trim() == "2000" }[0]
+                val b = Rect(); n.getBoundsInScreen(b)
+                tap(b.exactCenterX(), b.exactCenterY())
+                return true
             }
+            if (ocrTapElement("\\b2000\\b")) return true
+            swipe(xYear, y1, xYear, y2, 280)
+            Thread.sleep(400)
+            i++
+        }
+        i = 0
+        while (i < 12) {
+            checkStop()
+            if (ocrTapElement("\\b2000\\b")) return true
+            swipe(xYear, y2, xYear, y1, 280)
+            Thread.sleep(400)
+            i++
         }
         return false
     }
 
     private fun loginVisible(): Boolean {
-        val keys = listOf("Войти", "Войдите", "Вход", "Sign in", "Sign In", "Log in", "Log In", "Продолжить с Google", "Продолжить на телефоне", "Продолжить с Facebook", "Вход через Google")
+        val keys = listOf("Продолжить с Google", "Continue with Google", "Войдите в аккаунт", "Продолжить на телефоне")
         if (findNodes { matches(it, keys, false) }.isNotEmpty()) return true
-        return screenHasText(listOf("Войдите", "Войти", "Sign in", "Log in", "Продолжить с Google"))
-    }
-
-    private fun tapConsent(timeout: Long) {
-        val end = System.currentTimeMillis() + timeout
-        while (System.currentTimeMillis() < end) {
-            checkStop()
-            if (tapByText(listOf("Продолжить", "I agree", "Согласен", "Соглашаюсь", "Далее"), 2_000, optional = true)) {
-                Thread.sleep(2500)
-            } else {
-                return
-            }
-        }
+        return screenHasText(listOf("Продолжить с Google", "Войдите в аккаунт", "Continue with Google"))
     }
 
     private fun pickGoogleAccount(timeout: Long) {
         BotLog.add("Жду выбор аккаунта Google…")
         val end = System.currentTimeMillis() + timeout
-        var hinted = false
+        var tappedCoord = false
         while (System.currentTimeMillis() < end) {
             checkStop()
             val acc = findNodes {
@@ -355,39 +323,54 @@ class DolaAutomationService : AccessibilityService() {
                     n.getBoundsInScreen(b)
                     b.top
                 } ?: acc[0]
-                val ok = (top.isClickable && top.performAction(AccessibilityNodeInfo.ACTION_CLICK)) ||
-                    clickableParent(top)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
-                if (!ok) {
-                    val b = Rect()
-                    top.getBoundsInScreen(b)
-                    tap(b.exactCenterX(), b.exactCenterY())
-                }
+                clickNode(top)
                 BotLog.add("Выбран верхний аккаунт Google")
-                Thread.sleep(4000)
+                Thread.sleep(3000)
                 return
             }
             if (ocrTapElement("@gmail")) {
                 BotLog.add("Выбран аккаунт Google (OCR)")
-                Thread.sleep(4000)
+                Thread.sleep(3000)
                 return
             }
-            if (!hinted && System.currentTimeMillis() > end - timeout + 20_000) {
-                hinted = true
-                BotLog.add("Не вижу список аккаунтов — выбери аккаунт сам, я жду")
+            if (ocrTapElement("Выберите аккаунт")) {
+                Thread.sleep(400)
             }
-            Thread.sleep(1500)
+            if (!tappedCoord && System.currentTimeMillis() > end - timeout + 4_000) {
+                tappedCoord = true
+                val scr = Rect()
+                rootInActiveWindow?.getBoundsInScreen(scr)
+                if (scr.height() > 0) {
+                    BotLog.add("Жму первый аккаунт по координатам")
+                    tap(scr.left + scr.width() * 0.50f, scr.top + scr.height() * 0.52f)
+                    Thread.sleep(800)
+                    tap(scr.left + scr.width() * 0.50f, scr.top + scr.height() * 0.58f)
+                }
+            }
+            Thread.sleep(800)
         }
         BotLog.add("Выбор аккаунта не подтверждён, продолжаю")
     }
 
     private fun switchToPro() {
-        if (proChipOn()) return
-        if (!tapByText(listOf("Fast", "Быстрый"), 5_000, optional = true)) return
-        Thread.sleep(1500)
-        if (!tapByText(listOf("Продвинутая модель", "Pro"), 6_000, optional = true)) {
-            BotLog.add("Пункт Pro не найден — работаю с текущим режимом")
+        BotLog.add("Включаю Pro")
+        if (proChipOn()) {
+            BotLog.add("Pro уже включён")
+            return
         }
-        Thread.sleep(2000)
+        if (!tapByText(listOf("Fast", "Быстрый"), 6_000, optional = true)) {
+            BotLog.add("Чип Fast не найден")
+        }
+        Thread.sleep(1200)
+        if (tapByText(listOf("Продвинутая модель"), 6_000, optional = true) ||
+            ocrTapElement("Продвинутая модель") ||
+            tapExact(listOf("Pro"), 4_000, optional = true)
+        ) {
+            BotLog.add("Выбрал Pro")
+        } else {
+            BotLog.add("Пункт Pro не найден — работаю как есть")
+        }
+        Thread.sleep(1500)
     }
 
     private fun proChipOn(): Boolean {
@@ -400,10 +383,15 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun openVideoPanel() {
-        tapByText(listOf("Создание контента"), 6_000, optional = true)
+        BotLog.add("Открываю «Создание контента»")
+        val ok = tapByText(listOf("Создание контента", "Создание кон"), 8_000, optional = true) ||
+            ocrTapElement("Создание контента|Создание кон")
+        if (!ok) BotLog.add("Чип «Создание контента» не найден")
         Thread.sleep(1500)
-        tapExact(listOf("Видео"), 4_000, optional = true)
-        Thread.sleep(1200)
+        if (tapExact(listOf("Видео"), 5_000, optional = true) || ocrTapElement("^Видео$")) {
+            BotLog.add("Вкладка Видео")
+        }
+        Thread.sleep(1000)
     }
 
     private fun waitReady(timeout: Long): Int {
@@ -512,11 +500,10 @@ class DolaAutomationService : AccessibilityService() {
         }
         BotLog.add("Аккаунт удалён — жду пересоздания")
         Thread.sleep(6000)
-        tapByText(listOf("Продолжить", "Continue", "Начать", "Get started"), 5_000, optional = true)
-        handleLogin()
-        waitChatReady(120_000)
+        tapExact(listOf("Продолжить", "Начать"), 5_000, optional = true)
         handleLogin()
         handleBirthday()
+        waitChatReady(30_000, retryLogin = false)
         BotLog.add("Новый аккаунт готов")
     }
 
@@ -640,13 +627,20 @@ class DolaAutomationService : AccessibilityService() {
         if (n == null) return false
         val b = Rect()
         n.getBoundsInScreen(b)
+        BotLog.add("Поле найдено — долгий тап → Вставить")
         tap(b.exactCenterX(), b.exactCenterY())
-        Thread.sleep(800)
-        repeat(3) {
+        Thread.sleep(600)
+        var k = 0
+        while (k < 3) {
+            k++
             longPress(b.exactCenterX(), b.exactCenterY())
-            Thread.sleep(1200)
+            Thread.sleep(900)
             if (tapPaste()) {
                 BotLog.add("Промпт вставлен (долгий тап → Вставить)")
+                return true
+            }
+            if (ocrTapElement("Вставить|Paste")) {
+                BotLog.add("Промпт вставлен (OCR Вставить)")
                 return true
             }
         }
@@ -656,24 +650,16 @@ class DolaAutomationService : AccessibilityService() {
         }
         val args = Bundle()
         args.putCharSequence("ACTION_ARGUMENT_SET_TEXT_CHAR_SEQUENCE", prompt)
-        return n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        val ok = n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (ok) BotLog.add("Промпт вставлен (SET_TEXT)")
+        return ok
     }
 
     private fun tapPaste(): Boolean {
         val keys = listOf("Вставить", "Paste")
         val nodes = findNodes { matches(it, keys, false) }
-        for (nd in nodes) {
-            if (nd.isClickable && nd.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-            val p = clickableParent(nd)
-            if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-        }
-        if (nodes.isNotEmpty()) {
-            val b = Rect()
-            nodes[0].getBoundsInScreen(b)
-            tap(b.exactCenterX(), b.exactCenterY())
-            return true
-        }
-        return ocrTapElement("Вставить|Paste")
+        if (nodes.isNotEmpty()) return clickNode(smallestNode(nodes))
+        return false
     }
 
     private fun sendPrompt(): Boolean {
@@ -720,6 +706,7 @@ class DolaAutomationService : AccessibilityService() {
         try {
             for (w in windows) {
                 val r = w.root ?: continue
+                if (r.packageName?.toString() == packageName) continue
                 searchNodes(r, pred, out)
             }
         } catch (e: Exception) {}
@@ -848,7 +835,7 @@ class DolaAutomationService : AccessibilityService() {
         val p = Path()
         p.moveTo(x, y)
         val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(p, 0, 900))
+            .addStroke(GestureDescription.StrokeDescription(p, 0, 1100))
             .build()
         return dispatchAndWait(g, 2500)
     }
