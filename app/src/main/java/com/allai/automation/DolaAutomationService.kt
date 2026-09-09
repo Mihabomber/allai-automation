@@ -804,13 +804,11 @@ class DolaAutomationService : AccessibilityService() {
             return true
         }
         val field = findPromptField() ?: findEditable()
-        if (field != null && Build.VERSION.SDK_INT >= 30) {
+        if (field != null) {
             try {
-                if (field.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER)) {
-                    BotLog.add("Отправлено (Enter)")
-                    return true
-                }
+                field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             } catch (_: Exception) {}
+            Thread.sleep(500)
         }
         val scr = Rect()
         rootInActiveWindow?.getBoundsInScreen(scr)
