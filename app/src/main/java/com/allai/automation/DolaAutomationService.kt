@@ -83,6 +83,7 @@ class DolaAutomationService : AccessibilityService() {
         handleLogin()
         waitChatReady(90_000)
         handleLogin()
+        handleBirthday()
         val prep = prepare(job)
         val out = ArrayList<File>()
         BotLog.add("Генерирую PART1")
@@ -241,8 +242,72 @@ class DolaAutomationService : AccessibilityService() {
         Thread.sleep(2000)
         pickGoogleAccount(60_000)
         tapConsent(30_000)
+        handleBirthday()
         waitChatReady(180_000, retryLogin = false)
         BotLog.add("Вход завершён" + if (findEditable() != null) "" else " (не подтвердилось, продолжаю)")
+    }
+
+    private fun birthdayVisible(): Boolean {
+        val keys = listOf("дата рождения", "Дата рождения", "date of birth", "Date of Birth", "Год", "год")
+        if (findNodes { matches(it, keys, false) }.isNotEmpty()) return true
+        return screenHasText(listOf("дата рождения", "Дата рождения", "date of birth"))
+    }
+
+    private fun handleBirthday() {
+        val deadline = System.currentTimeMillis() + 25_000
+        var seen = false
+        while (System.currentTimeMillis() < deadline) {
+            checkStop()
+            if (birthdayVisible()) {
+                seen = true
+                break
+            }
+            Thread.sleep(1500)
+        }
+        if (!seen) return
+        BotLog.add("Экран даты рождения — прокручиваю год к 2000")
+        if (!scrollForText("2000", 30)) {
+            BotLog.add("Не нашёл 2000 — выбери год сам, я жду 10с")
+            repeat(10) {
+                checkStop()
+                Thread.sleep(1000)
+                if (findNodes { (it.text ?: "").toString().trim() == "2000" }.isNotEmpty()) break
+            }
+        }
+        Thread.sleep(1200)
+        tapByText(listOf("Далее", "Готово", "ОК", "OK", "Подтвердить", "Продолжить", "Сохранить", "Done", "Next"), 12_000, optional = true)
+        Thread.sleep(2000)
+        BotLog.add("Дату рождения прошёл")
+    }
+
+    private fun scrollForText(pattern: String, maxSwipes: Int): Boolean {
+        val re = Regex(pattern)
+        val scr = Rect()
+        for (dir in listOf(1, 0)) {
+            for (i in 0 until maxSwipes) {
+                checkStop()
+                val hit = findNodes { re.matches((it.text ?: "").toString().trim()) }
+                if (hit.isNotEmpty()) {
+                    val n = hit[0]
+                    if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                    val p = clickableParent(n)
+                    if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                    val b = Rect()
+                    n.getBoundsInScreen(b)
+                    tap(b.exactCenterX(), b.exactCenterY())
+                    return true
+                }
+                if (ocrTapElement("\\b" + pattern + "\\b")) return true
+                rootInActiveWindow?.getBoundsInScreen(scr)
+                if (scr.height() == 0) continue
+                val cx = scr.exactCenterX()
+                val yTop = scr.bottom - scr.height() * 0.30f
+                val yBottom = scr.bottom - scr.height() * 0.60f
+                if (dir == 1) swipe(cx, yTop, cx, yBottom, 350) else swipe(cx, yBottom, cx, yTop, 350)
+                Thread.sleep(1200)
+            }
+        }
+        return false
     }
 
     private fun loginVisible(): Boolean {
@@ -439,6 +504,7 @@ class DolaAutomationService : AccessibilityService() {
         handleLogin()
         waitChatReady(120_000)
         handleLogin()
+        handleBirthday()
         BotLog.add("Новый аккаунт готов")
     }
 
@@ -554,17 +620,48 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun typePrompt(prompt: String): Boolean {
-        var n = findPromptField()
-        if (n == null && ocrTapElement("Опишите видео|Опишите|Describe")) {
+        var n = findPromptField() ?: findEditable()
+        if (n == null && ocrTapElement("Опишите видео|Опишите|Сообщение|Describe")) {
             Thread.sleep(900)
-            n = findPromptField()
+            n = findPromptField() ?: findEditable()
         }
-        if (n == null) n = findEditable()
         if (n == null) return false
+        val b = Rect()
+        n.getBoundsInScreen(b)
+        tap(b.exactCenterX(), b.exactCenterY())
+        Thread.sleep(800)
+        repeat(3) {
+            longPress(b.exactCenterX(), b.exactCenterY())
+            Thread.sleep(1200)
+            if (tapPaste()) {
+                BotLog.add("Промпт вставлен (долгий тап → Вставить)")
+                return true
+            }
+        }
+        if (n.performAction(AccessibilityNodeInfo.ACTION_PASTE, Bundle())) {
+            BotLog.add("Промпт вставлен (буфер)")
+            return true
+        }
         val args = Bundle()
         args.putCharSequence("ACTION_ARGUMENT_SET_TEXT_CHAR_SEQUENCE", prompt)
-        if (n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true
-        return n.performAction(AccessibilityNodeInfo.ACTION_PASTE, Bundle())
+        return n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    private fun tapPaste(): Boolean {
+        val keys = listOf("Вставить", "Paste")
+        val nodes = findNodes { matches(it, keys, false) }
+        for (nd in nodes) {
+            if (nd.isClickable && nd.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            val p = clickableParent(nd)
+            if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        }
+        if (nodes.isNotEmpty()) {
+            val b = Rect()
+            nodes[0].getBoundsInScreen(b)
+            tap(b.exactCenterX(), b.exactCenterY())
+            return true
+        }
+        return ocrTapElement("Вставить|Paste")
     }
 
     private fun sendPrompt(): Boolean {
@@ -736,6 +833,25 @@ class DolaAutomationService : AccessibilityService() {
         p.moveTo(x, y)
         val g = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(p, 0, 60))
+            .build()
+        return dispatchGesture(g, null, null)
+    }
+
+    private fun longPress(x: Float, y: Float): Boolean {
+        val p = Path()
+        p.moveTo(x, y)
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(p, 0, 900))
+            .build()
+        return dispatchGesture(g, null, null)
+    }
+
+    private fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, dur: Long): Boolean {
+        val p = Path()
+        p.moveTo(x1, y1)
+        p.lineTo(x2, y2)
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(p, 0, dur))
             .build()
         return dispatchGesture(g, null, null)
     }
