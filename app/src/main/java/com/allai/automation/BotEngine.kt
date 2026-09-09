@@ -3,6 +3,7 @@ package com.allai.automation
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 object BotEngine {
     @Volatile var running = false
@@ -23,7 +24,8 @@ object BotEngine {
                         Thread.sleep(10_000)
                         continue
                     }
-                    val job = DiscordPoller.nextJob() ?: run {
+                    val job = DiscordPoller.nextJob()
+                    if (job == null) {
                         Thread.sleep(Config.pollSec * 1000L)
                         continue
                     }

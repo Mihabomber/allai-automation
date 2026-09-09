@@ -152,14 +152,14 @@ class DolaAutomationService : AccessibilityService() {
         }
         if (n == null) return false
         val args = Bundle()
-        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHAR_SEQUENCE, prompt)
+        args.putCharSequence("ACTION_ARGUMENT_SET_TEXT_CHAR_SEQUENCE", prompt)
         if (n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true
         val cm = getSystemService(ClipboardManager::class.java)
         cm.setPrimaryClip(ClipData.newPlainText("allai", prompt))
         return n.performAction(AccessibilityNodeInfo.ACTION_PASTE, Bundle())
     }
 
-    private fun findNodes(pred: (AccessibilityNodeInfo) -> Boolean, root: AccessibilityNodeInfo? = rootInActiveWindow): List<AccessibilityNodeInfo> {
+    private fun findNodes(root: AccessibilityNodeInfo? = rootInActiveWindow, pred: (AccessibilityNodeInfo) -> Boolean): List<AccessibilityNodeInfo> {
         val out = ArrayList<AccessibilityNodeInfo>()
         val r = root ?: return out
         val q = ArrayDeque<AccessibilityNodeInfo>()
