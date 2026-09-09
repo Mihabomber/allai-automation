@@ -9,16 +9,27 @@ android {
         applicationId = "com.allai.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "2.0"
+        versionCode = 13
+        versionName = "2.1"
+    }
+    signingConfigs {
+        create("allai") {
+            storeFile = file("allai.keystore")
+            storePassword = "allai2026"
+            keyAlias = "allai"
+            keyPassword = "allai2026"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildTypes {
-        debug {}
-        release { minifyEnabled = false }
+        debug { signingConfig = signingConfigs.getByName("allai") }
+        release {
+            minifyEnabled = false
+            signingConfig = signingConfigs.getByName("allai")
+        }
     }
     kotlinOptions { jvmTarget = "17" }
 }

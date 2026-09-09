@@ -229,22 +229,27 @@ class DolaAutomationService : AccessibilityService() {
     private fun handleLogin() {
         if (!loginVisible()) return
         BotLog.add("Вижу экран входа — жму «Продолжить с Google»")
-        if (!tapByText(GOOGLE_BTNS.split("\u0000"), 15_000, optional = true)) {
-            if (!ocrTapElement("Google")) {
-                val scr = Rect()
-                rootInActiveWindow?.getBoundsInScreen(scr)
-                if (scr.height() > 0) {
-                    BotLog.add("Жму кнопку Google по координатам")
-                    tap(scr.left + scr.width() * 0.5f, scr.top + scr.height() * 0.545f)
-                }
+        if (tapByText(GOOGLE_BTNS.split("\u0000"), 15_000, optional = true)) {
+            BotLog.add("Нажал «Продолжить с Google»")
+        } else if (ocrTapElement("Google")) {
+            BotLog.add("Нажал «Продолжить с Google» (OCR)")
+        } else {
+            val scr = Rect()
+            rootInActiveWindow?.getBoundsInScreen(scr)
+            if (scr.height() > 0) {
+                BotLog.add("Жму кнопку Google по координатам")
+                tap(scr.left + scr.width() * 0.5f, scr.top + scr.height() * 0.545f)
             }
         }
         Thread.sleep(2000)
-        pickGoogleAccount(60_000)
+        pickGoogleAccount(90_000)
         tapConsent(30_000)
         handleBirthday()
         waitChatReady(180_000, retryLogin = false)
-        BotLog.add("Вход завершён" + if (findEditable() != null) "" else " (не подтвердилось, продолжаю)")
+        if (loginVisible()) {
+            fail("Вход в Dola не удался — сделай вручную: «Продолжить с Google» → выбери аккаунт, потом снова запусти бота")
+        }
+        BotLog.add("Вход завершён")
     }
 
     private fun birthdayVisible(): Boolean {
@@ -331,6 +336,7 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun pickGoogleAccount(timeout: Long) {
+        BotLog.add("Жду выбор аккаунта Google…")
         val end = System.currentTimeMillis() + timeout
         var hinted = false
         while (System.currentTimeMillis() < end) {
@@ -361,7 +367,7 @@ class DolaAutomationService : AccessibilityService() {
                 Thread.sleep(4000)
                 return
             }
-            if (!hinted && System.currentTimeMillis() > end - timeout / 2) {
+            if (!hinted && System.currentTimeMillis() > end - timeout + 20_000) {
                 hinted = true
                 BotLog.add("Не вижу список аккаунтов — выбери аккаунт сам, я жду")
             }
