@@ -273,14 +273,21 @@ class DolaAutomationService : AccessibilityService() {
                 t.contains("@gmail", true) || t.contains("googlemail", true)
             }
             if (acc.isNotEmpty()) {
-                val n = acc[0]
-                val ok = (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) ||
-                    clickableParent(n)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
-                if (ok) {
-                    BotLog.add("Выбран аккаунт Google")
-                    Thread.sleep(4000)
-                    return
+                val top = acc.minByOrNull { n ->
+                    val b = Rect()
+                    n.getBoundsInScreen(b)
+                    b.top
+                } ?: acc[0]
+                val ok = (top.isClickable && top.performAction(AccessibilityNodeInfo.ACTION_CLICK)) ||
+                    clickableParent(top)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                if (!ok) {
+                    val b = Rect()
+                    top.getBoundsInScreen(b)
+                    tap(b.exactCenterX(), b.exactCenterY())
                 }
+                BotLog.add("Выбран верхний аккаунт Google")
+                Thread.sleep(4000)
+                return
             }
             if (ocrTapElement("@gmail")) {
                 BotLog.add("Выбран аккаунт Google (OCR)")
