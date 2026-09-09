@@ -197,6 +197,15 @@ object DiscordPoller {
                 text += "\n" + e.optString("title") + "\n" + e.optString("description")
             }
         }
+        val trimmed = text.trim()
+        if (trimmed.startsWith("/sd25", true)) {
+            val raw = trimmed.substring(5).trim()
+            if (raw.isEmpty()) return null
+            val wrapped = "сгенерируй видео 15 секунд 15 секунд 15 секунд 15 секунд $raw никаких подтверждений сразу генерируй"
+            val at = attachments(m)
+            BotLog.add("Новая задача /sd25 ${m.getString("id")} (${m.optJSONObject("author")?.optString("username") ?: "?"}): фото ${at.first.size}, аудио ${if (at.second != null) "да" else "нет"}")
+            return Job(m.getString("id"), m.optString("channel_id", Config.channel), wrapped, "", at.first, at.second)
+        }
         val up = text.uppercase()
         val i1 = up.indexOf("[PART1]")
         if (i1 < 0) return null
@@ -205,6 +214,14 @@ object DiscordPoller {
         val p1 = text.substring(i1 + 7, if (i2 >= 0) i2 else text.length).trim()
         val p2 = if (i2 >= 0) text.substring(i2 + 7, if (i3 >= 0) i3 else text.length).trim() else ""
         if (p1.isEmpty()) return null
+        val at = attachments(m)
+        val images = at.first
+        val audio = at.second
+        BotLog.add("Новая задача ${m.getString("id")} (${m.optJSONObject("author")?.optString("username") ?: "?"}): фото ${images.size}, аудио ${if (audio != null) "да" else "нет"}")
+        return Job(m.getString("id"), m.optString("channel_id", Config.channel), p1, p2, images, audio)
+    }
+
+    private fun attachments(m: JSONObject): Pair<List<String>, String?> {
         val images = ArrayList<String>(2)
         var audio: String? = null
         val att = m.optJSONArray("attachments")
@@ -227,8 +244,7 @@ object DiscordPoller {
                 }
             }
         }
-        BotLog.add("Новая задача ${m.getString("id")} (${m.optJSONObject("author")?.optString("username") ?: "?"}): фото ${images.size}, аудио ${if (audio != null) "да" else "нет"}")
-        return Job(m.getString("id"), m.optString("channel_id", Config.channel), p1, p2, images, audio)
+        return Pair(images, audio)
     }
 
     fun send(channel: String, text: String): Boolean {

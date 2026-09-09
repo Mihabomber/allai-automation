@@ -39,14 +39,18 @@ object BotEngine {
                     BotState.step = "РАБОТАЮ: задача ${job.id}"
                     latch.await(45, TimeUnit.MINUTES)
                     BotState.step = "ОЖИДАНИЕ"
-                    if (files.isNotEmpty()) {
-                        val names = files.joinToString(", ") { it.name }
-                        var sent = DiscordPoller.sendVideo(job.channel, "✅ Готово: $names", files[0])
-                        for (i in 1 until files.size) {
-                            sent = DiscordPoller.sendVideo(job.channel, "Файл ${i + 1}", files[i]) || sent
+                    val url = DolaAutomationService.lastVideoUrl
+                    val vids = files.filter { it.length() > 10_000 && (it.name.endsWith(".mp4") || it.name.endsWith(".webm")) }
+                    if (url.isNotEmpty()) {
+                        DiscordPoller.send(job.channel, "✅ Видео: $url")
+                    }
+                    if (vids.isNotEmpty()) {
+                        var sent = DiscordPoller.sendVideo(job.channel, "✅ Готово: ${vids[0].name}", vids[0])
+                        for (i in 1 until vids.size) {
+                            sent = DiscordPoller.sendVideo(job.channel, "Файл ${i + 1}", vids[i]) || sent
                         }
                         if (!sent) BotLog.add("Не смог отправить видео в Discord")
-                    } else {
+                    } else if (url.isEmpty()) {
                         DiscordPoller.send(job.channel, "❌ Ошибка: $err")
                     }
                 } catch (e: Exception) {

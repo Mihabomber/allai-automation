@@ -37,6 +37,7 @@ class DolaAutomationService : AccessibilityService() {
     companion object {
         @Volatile var instance: DolaAutomationService? = null
         @Volatile var stopRequested = false
+        @Volatile var lastVideoUrl = ""
         private const val LOGIN_BTNS = "Войти\u0000Войдите\u0000Вход\u0000Sign In\u0000Sign in\u0000Log in"
         private const val GOOGLE_BTNS = "Продолжить с Google\u0000Продолжить через Google\u0000Войти через Google\u0000Sign in with Google\u0000Continue with Google"
         private const val DOWNLOAD_BTNS = "Скачать\u0000Download\u0000Save\u0000Сохранить"
@@ -109,9 +110,19 @@ class DolaAutomationService : AccessibilityService() {
             BotLog.add("Жду генерацию ($tag)...")
             when (waitReady(20 * 60_000)) {
                 READY -> {
-                    val f = watchAndDownload(tag) ?: fail("Видео не скачалось")
-                    BotLog.add("$tag готов: ${f.length() / 1024} KB")
-                    return f
+                    val f = watchAndDownload(tag)
+                    if (f == null && lastVideoUrl.isEmpty()) fail("Видео не скачалось")
+                    if (f != null && f.length() > 10_000) {
+                        BotLog.add("$tag готов: ${f.length() / 1024} KB")
+                        return f
+                    }
+                    if (lastVideoUrl.isNotEmpty()) {
+                        BotLog.add("$tag ссылка: $lastVideoUrl")
+                        val dummy = File(getExternalFilesDir("jobs"), "allai_$tag.link.txt")
+                        dummy.writeText(lastVideoUrl)
+                        return dummy
+                    }
+                    fail("Видео не скачалось")
                 }
                 else -> {
                     BotLog.add("Лимит/сбой Dola — пересоздаю аккаунт (попытка $attempts)")
@@ -428,25 +439,83 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun watchAndDownload(tag: String): File? {
+        lastVideoUrl = ""
         val before = System.currentTimeMillis() / 1000 - 5
-        if (!tapByText(watchWords, 12_000, optional = true)) {
-            BotLog.add("Нет «Смотреть видео» — пробую скачать из открытого окна")
+        BotLog.add("Жму синюю ссылку «Смотреть видео»")
+        if (!tapByText(watchWords, 12_000, optional = true) && !ocrTapElement("Смотреть видео|Watch video")) {
+            val blues = findNodes { n ->
+                val t = (n.text ?: "").toString()
+                n.isClickable && (t.contains("http", true) || t.contains("dola.com", true) || t.contains("смотр", true))
+            }
+            if (blues.isNotEmpty()) clickNode(smallestNode(blues))
         }
-        Thread.sleep(5000)
+        Thread.sleep(4000)
         checkStop()
-        val end = System.currentTimeMillis() + 6 * 60_000
+        val scr0 = Rect(); rootInActiveWindow?.getBoundsInScreen(scr0)
+        if (scr0.height() > 0) {
+            BotLog.add("Жму на видео")
+            tap(scr0.exactCenterX(), scr0.top + scr0.height() * 0.42f)
+            Thread.sleep(1200)
+            BotLog.add("Жму три точки")
+            tap(scr0.left + scr0.width() * 0.90f, scr0.top + scr0.height() * 0.72f)
+            Thread.sleep(1200)
+        }
+        if (!tapByText(DOWNLOAD_BTNS.split("\u0000"), 8_000, optional = true)) {
+            ocrTapElement("Скачать|Download")
+        }
+        Thread.sleep(2500)
+        grabChromeUrl()
+        val end = System.currentTimeMillis() + 5 * 60_000
         while (System.currentTimeMillis() < end) {
             checkStop()
             tryDownloadInBrowser()
+            grabChromeUrl()
             val dst = File(getExternalFilesDir("jobs"), "allai_$tag.mp4")
-            val f = waitVideo(before, 20_000, dst)
+            val f = waitVideo(before, 15_000, dst)
             if (f != null) {
+                grabChromeUrl()
                 backToDola()
                 return f
+            }
+            if (lastVideoUrl.isNotEmpty()) {
+                BotLog.add("Ссылка скопирована: $lastVideoUrl")
+                backToDola()
+                return File(getExternalFilesDir("jobs"), "allai_$tag.mp4").also { it.writeText(lastVideoUrl) }
             }
             Thread.sleep(2000)
         }
         return null
+    }
+
+    private fun grabChromeUrl() {
+        val nodes = findNodes { n ->
+            val t = (n.text ?: "").toString() + " " + (n.contentDescription ?: "")
+            t.contains("dola.com", true) || t.contains("http://", true) || t.contains("https://", true)
+        }
+        for (n in nodes) {
+            val t = (n.text ?: "").toString().trim()
+            val d = (n.contentDescription ?: "").toString().trim()
+            val u = when {
+                t.contains("dola.com") || t.startsWith("http") -> t
+                d.contains("dola.com") || d.startsWith("http") -> d
+                else -> ""
+            }
+            if (u.contains("dola.com") || u.startsWith("http")) {
+                setVideoUrl(u.split(" ").first())
+                return
+            }
+        }
+        val ocr = ocrText() ?: return
+        val re = Regex("(https?://\\S*dola[^\\s]*|v\\d+-dola[^\\s]*|\\d{2,}-dola\\.dola\\.com[^\\s]*)", RegexOption.IGNORE_CASE)
+        val hit = re.find(ocr.replace("\n", " "))?.value
+        if (hit != null) setVideoUrl(if (hit.startsWith("http")) hit else "https://$hit")
+    }
+
+    private fun setVideoUrl(u: String) {
+        if (u.isNotEmpty() && u != lastVideoUrl) {
+            lastVideoUrl = u
+            BotLog.add("URL: $lastVideoUrl")
+        }
     }
 
     private fun tryDownloadInBrowser() {
@@ -455,7 +524,8 @@ class DolaAutomationService : AccessibilityService() {
         val web = findNodes { it.className?.toString().equals("android.webkit.WebView", true) }.firstOrNull()
         val isBrowser = pkg.contains("chrome", true) || pkg.contains("browser", true) || web != null
         if (!isBrowser) return
-        if (tapByText(DOWNLOAD_BTNS.split("\u0000"), 1_500, optional = true)) {
+        grabChromeUrl()
+        if (tapByText(DOWNLOAD_BTNS.split("\u0000"), 2_000, optional = true)) {
             Thread.sleep(2500)
             return
         }
@@ -465,10 +535,11 @@ class DolaAutomationService : AccessibilityService() {
             b.top += (b.height() * 0.10).toInt()
         }
         tap(b.exactCenterX(), b.exactCenterY())
-        Thread.sleep(1000)
+        Thread.sleep(800)
         tap(b.left + b.width() * 0.90f, b.bottom - b.height() * 0.11f)
-        Thread.sleep(1500)
-        if (tapByText(DOWNLOAD_BTNS.split("\u0000"), 5_000, optional = true)) Thread.sleep(2500)
+        Thread.sleep(1200)
+        if (tapByText(DOWNLOAD_BTNS.split("\u0000"), 5_000, optional = true) || ocrTapElement("Скачать")) Thread.sleep(2500)
+        grabChromeUrl()
     }
 
     private fun backToDola() {
@@ -495,26 +566,50 @@ class DolaAutomationService : AccessibilityService() {
         BotLog.add("Ротация: удаляю аккаунт Dola")
         bringDolaToFront()
         Thread.sleep(2000)
+        val scr = Rect()
+        rootInActiveWindow?.getBoundsInScreen(scr)
+        BotLog.add("Жму меню ≡")
         if (!tapDescOrText(listOf("Меню", "Menu", "Открыть меню", "navigation", "drawer"))) {
-            val scr = Rect()
-            rootInActiveWindow?.getBoundsInScreen(scr)
             tap(scr.left + scr.width() * 0.065f, scr.top + scr.height() * 0.072f)
         }
         Thread.sleep(1800)
+        BotLog.add("Жму настройки")
         if (!tapDescOrText(listOf("Настройки", "Settings", "gear"))) {
-            val scr2 = Rect()
-            rootInActiveWindow?.getBoundsInScreen(scr2)
-            tap(scr2.left + scr2.width() * 0.77f, scr2.top + scr2.height() * 0.765f)
+            rootInActiveWindow?.getBoundsInScreen(scr)
+            tap(scr.left + scr.width() * 0.72f, scr.top + scr.height() * 0.93f)
         }
         Thread.sleep(1800)
-        if (!tapByText(listOf("Аккаунт Dola"), 8_000)) fail("Не нашёл «Аккаунт Dola»")
-        if (!tapByText(listOf("Удалить учетную запись"), 8_000)) fail("Не нашёл «Удалить учетную запись»")
-        Thread.sleep(1200)
-        if (!tapExact(listOf("Удалить"), 8_000)) fail("Не подтвердил удаление")
-        Thread.sleep(1500)
-        if (!tapByText(listOf("Удалить сейчас"), 10_000, optional = true) && !ocrTapElement("Удалить сейчас")) {
-            fail("Не нашёл «Удалить сейчас»")
+        if (!tapByText(listOf("Аккаунт Dola"), 8_000, optional = true) && !ocrTapElement("Аккаунт Dola")) {
+            BotLog.add("Жму Аккаунт Dola по координатам")
+            rootInActiveWindow?.getBoundsInScreen(scr)
+            tap(scr.exactCenterX(), scr.top + scr.height() * 0.22f)
         }
+        Thread.sleep(1500)
+        val delWords = listOf("Удалить учетную запись", "Удалить учётную запись")
+        var gotDel = tapByText(delWords, 4_000, optional = true) || ocrTapElement("Удалить учетную|Удалить учётную")
+        var sw = 0
+        while (!gotDel && sw < 4) {
+            sw++
+            checkStop()
+            BotLog.add("Не нашёл удаление — скроллю вниз ($sw)")
+            rootInActiveWindow?.getBoundsInScreen(scr)
+            swipe(scr.exactCenterX(), scr.top + scr.height() * 0.7f, scr.exactCenterX(), scr.top + scr.height() * 0.3f, 400)
+            Thread.sleep(800)
+            gotDel = tapByText(delWords, 3_000, optional = true) || ocrTapElement("Удалить учетную|Удалить учётную")
+        }
+        if (!gotDel) fail("Не нашёл «Удалить учетную запись»")
+        Thread.sleep(1200)
+        tapExact(listOf("Удалить"), 8_000, optional = true) || ocrTapElement("^Удалить$")
+        Thread.sleep(1500)
+        var gotNow = tapByText(listOf("Удалить сейчас"), 8_000, optional = true) || ocrTapElement("Удалить сейчас")
+        if (!gotNow) {
+            BotLog.add("Жму «Удалить сейчас» по координатам")
+            rootInActiveWindow?.getBoundsInScreen(scr)
+            tap(scr.exactCenterX(), scr.top + scr.height() * 0.55f)
+            Thread.sleep(1500)
+            gotNow = tapByText(listOf("Удалить сейчас"), 5_000, optional = true) || ocrTapElement("Удалить сейчас")
+        }
+        if (!gotNow) fail("Не нашёл «Удалить сейчас»")
         BotLog.add("Аккаунт удалён — жду пересоздания")
         Thread.sleep(6000)
         tapExact(listOf("Продолжить", "Начать"), 5_000, optional = true)
@@ -697,35 +792,32 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun sendPrompt(): Boolean {
         val keys = listOf("Отправить", "Send", "Отправить сообщение", "Send message", "Отправка", "Submit")
+        val skip = listOf("микрофон", "голос", "voice", "mic", "dictation", "камера", "camera")
         val nodes = findNodes { n ->
             val d = (n.contentDescription ?: "").toString()
             val t = (n.text ?: "").toString()
-            keys.any { d.equals(it, true) || t.equals(it, true) }
+            if (skip.any { d.contains(it, true) || t.contains(it, true) }) false
+            else keys.any { d.equals(it, true) || t.equals(it, true) }
         }
-        for (n in nodes) {
-            if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                BotLog.add("Отправлено")
-                return true
-            }
-            val p = clickableParent(n)
-            if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                BotLog.add("Отправлено")
-                return true
-            }
+        if (nodes.isNotEmpty() && clickNode(smallestNode(nodes))) {
+            BotLog.add("Отправлено")
+            return true
         }
         val field = findPromptField() ?: findEditable()
-        if (field != null) {
-            val b = Rect()
-            field.getBoundsInScreen(b)
-            val scr = Rect()
-            rootInActiveWindow?.getBoundsInScreen(scr)
-            if (scr.width() > 0) {
-                val x = b.right + b.height() * 0.9f
-                val cx = if (x < scr.right - 30f) x else scr.right - 40f
-                tap(cx, b.exactCenterY())
-                BotLog.add("Отправлено (координаты)")
-                return true
-            }
+        if (field != null && Build.VERSION.SDK_INT >= 30) {
+            try {
+                if (field.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER)) {
+                    BotLog.add("Отправлено (Enter)")
+                    return true
+                }
+            } catch (_: Exception) {}
+        }
+        val scr = Rect()
+        rootInActiveWindow?.getBoundsInScreen(scr)
+        if (scr.width() > 0) {
+            BotLog.add("Жму кнопку отправки на клавиатуре")
+            tap(scr.left + scr.width() * 0.92f, scr.top + scr.height() * 0.94f)
+            return true
         }
         return false
     }
