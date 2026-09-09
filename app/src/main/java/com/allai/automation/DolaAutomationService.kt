@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Path
@@ -88,22 +89,31 @@ class DolaAutomationService : AccessibilityService() {
         tapByText(listOf("720p"), 3_000, optional = true)
         tapByText(listOf("15s"), 3_000, optional = true)
 
+        val prep = prepare(job)
         BotLog.add("Генерирую PART1")
-        val f1 = generate(job.part1, job.id, "part1")
+        val f1 = generate(job.part1, job.id, "part1", prep)
         val out = mutableListOf(f1)
 
         if (job.part2.isNotEmpty()) {
             checkStop()
             BotLog.add("Генерирую PART2")
-            val f2 = generate(job.part2, job.id, "part2")
+            val f2 = generate(job.part2, job.id, "part2", prep)
             out.add(f2)
         }
         BotLog.add("Задача выполнена: ${out.size} видео")
         return out
     }
 
-    private fun generate(prompt: String, jobId: String, tag: String): File {
+    private fun generate(prompt: String, jobId: String, tag: String, prep: Prep): File {
         if (!typePrompt(prompt)) fail("Не нашёл поле Prompt")
+        prep.imgs.forEachIndexed { i, f ->
+            BotLog.add("Креплю фото ${i + 1}")
+            attachPicker(f.name, listOf("Upload", "Upload image", "Choose image", "Add image", "Photo"))
+        }
+        prep.audio?.let {
+            BotLog.add("Креплю аудио")
+            attachPicker(it.name, listOf("Choose audio", "Audio", "Аудио"))
+        }
         if (!tapByText(GENERATE_BTNS.split("\u0000"), 12_000)) fail("Не нашёл кнопку Generate")
         checkStop()
         BotLog.add("Жду генерацию ($tag)...")
@@ -119,6 +129,96 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun checkStop() {
         if (stopRequested) throw RuntimeException("Остановлено пользователем")
+    }
+
+    private class Prep(val imgs: List<File>, val audio: File?)
+
+    private fun prepare(job: DiscordPoller.Job): Prep {
+        val dir = getExternalFilesDir("jobs")!!
+        dir.mkdirs()
+        val imgs = ArrayList<File>()
+        job.images.forEachIndexed { i, u ->
+            val f = File(dir, "allai_img${i + 1}.png")
+            if (DiscordPoller.download(u, f)) imgs.add(f) else BotLog.add("Фото ${i + 1}: не скачалось")
+        }
+        var audio: File? = null
+        job.audio?.let { u ->
+            val raw = File(dir, "audio_raw")
+            if (DiscordPoller.download(u, raw)) {
+                val dst = File(dir, "allai_audio.wav")
+                audio = try {
+                    AudioConvert.prepare(raw, dst)
+                } catch (e: Exception) {
+                    BotLog.add("Аудио: ${e.message}")
+                    null
+                }
+            } else BotLog.add("Аудио: не скачалось")
+        }
+        imgs.forEach { publishToDownloads(it, "image/png") }
+        audio?.let { publishToDownloads(it, "audio/wav") }
+        return Prep(imgs, audio)
+    }
+
+    private fun publishToDownloads(src: File, mime: String) {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, src.name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
+                contentResolver.openOutputStream(uri)?.use { o ->
+                    src.inputStream().use { it.copyTo(o, 65536) }
+                }
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+            } else {
+                val dst = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), src.name)
+                src.copyTo(dst, overwrite = true)
+            }
+        } catch (e: Exception) {
+            BotLog.add("publish: ${e.message}")
+        }
+    }
+
+    private fun attachPicker(fileName: String, btns: List<String>) {
+        if (!tapByText(btns, 8_000, optional = true)) {
+            BotLog.add("Кнопка вложения не найдена — прикрепи $fileName вручную (40с)")
+            repeat(40) { checkStop(); Thread.sleep(1000) }
+            return
+        }
+        Thread.sleep(2500)
+        tapByText(listOf("Downloads", "Загрузки", "Recent", "Недавние"), 3_000, optional = true)
+        Thread.sleep(1000)
+        if (!pickerTap(fileName, 20_000)) BotLog.add("$fileName не найден в списке — выбери вручную")
+        Thread.sleep(1500)
+        tapByText(listOf("Open", "Открыть", "Done", "Готово", "Select", "Выбрать"), 4_000, optional = true)
+        Thread.sleep(1500)
+    }
+
+    private fun pickerTap(fileName: String, timeout: Long): Boolean {
+        val end = System.currentTimeMillis() + timeout
+        while (System.currentTimeMillis() < end) {
+            checkStop()
+            val nodes = findNodes {
+                (it.text ?: "").toString().contains(fileName, true) ||
+                    (it.contentDescription ?: "").toString().contains(fileName, true)
+            }
+            for (n in nodes) {
+                if (n.isClickable && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                val p = clickableParent(n)
+                if (p != null && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                val b = Rect()
+                n.getBoundsInScreen(b)
+                tap(b.exactCenterX(), b.exactCenterY())
+                return true
+            }
+            if (ocrTapElement(Regex.escape(fileName))) return true
+            Thread.sleep(1500)
+        }
+        return false
     }
 
     private fun fail(msg: String): Nothing {

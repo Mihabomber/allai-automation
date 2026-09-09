@@ -94,9 +94,14 @@ class MainActivity : Activity() {
         etToken.setText(Config.token); etChannel.setText(Config.channel)
         etUrl.setText(Config.dolaUrl); etPoll.setText(Config.pollSec.toString())
         settings.addView(etToken); settings.addView(etChannel); settings.addView(etUrl); settings.addView(etPoll)
-        settings.addView(btn("СОХРАНИТЬ НАСТРОЙКИ", 0xFF2F6FED.toInt(), small = true).apply {
+        val saveRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(10), 0, dp(10), 0) }
+        saveRow.addView(btn("СОХРАНИТЬ", 0xFF2F6FED.toInt(), small = true).apply {
             setOnClickListener { save(); toast("Сохранено") }
-        }, m(0, dp(8), 0, 0))
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, dp(8), dp(4), 0) })
+        saveRow.addView(btn("ТЕСТ DISCORD", 0xFF6E44C2.toInt(), small = true).apply {
+            setOnClickListener { save(); DiscordPoller.test() }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), dp(8), 0, 0) })
+        settings.addView(saveRow)
         root.addView(settings, m(0, 0, 0, 12))
 
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
@@ -171,15 +176,24 @@ class MainActivity : Activity() {
     }
 
     private fun askStorage() {
-        val p = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
-        if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(p), 1)
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) != PackageManager.PERMISSION_GRANTED)
+                requestPermissions(arrayOf(Manifest.permission.READ_MEDIA_VIDEO), 1)
+        } else {
+            val ps = mutableListOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            if (Build.VERSION.SDK_INT <= 28) ps.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            if (ps.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED })
+                requestPermissions(ps.toTypedArray(), 1)
+        }
     }
 
     private fun save() {
+        val oldToken = Config.token
         Config.token = etToken.text.toString()
         Config.channel = etChannel.text.toString()
         Config.dolaUrl = etUrl.text.toString()
         Config.pollSec = etPoll.text.toString().toIntOrNull() ?: 10
+        if (Config.token != oldToken) Config.lastMsgId = "0"
     }
 
     private fun refresh() {
