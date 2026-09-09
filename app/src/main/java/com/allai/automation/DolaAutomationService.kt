@@ -34,8 +34,8 @@ class DolaAutomationService : AccessibilityService() {
     companion object {
         @Volatile var instance: DolaAutomationService? = null
         @Volatile var stopRequested = false
-        private const val LOGIN_BTNS = "Sign In\u0000Sign in\u0000Войти\u0000Log in\u0000Войти через"
-        private const val GOOGLE_BTNS = "Sign in with Google\u0000Continue with Google\u0000Войти через Google\u0000Google"
+        private const val LOGIN_BTNS = "Sign In\u0000Sign in\u0000Войти\u0000Log in\u0000Вход"
+        private const val GOOGLE_BTNS = "Продолжить с Google\u0000Продолжить через Google\u0000Войти через Google\u0000Sign in with Google\u0000Continue with Google\u0000Google"
         private const val DOWNLOAD_BTNS = "Скачать\u0000Download\u0000Save\u0000Сохранить"
         private const val READY = 0
         private const val LIMIT = 1
@@ -79,9 +79,10 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun execute(job: DiscordPoller.Job): List<File> {
         ensureDolaApp()
-        Thread.sleep(2000)
+        Thread.sleep(3000)
         handleLogin()
-        waitChatReady(60_000)
+        waitChatReady(90_000)
+        handleLogin()
         val prep = prepare(job)
         val out = ArrayList<File>()
         BotLog.add("Генерирую PART1")
@@ -119,6 +120,7 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun sendViaPanel(prompt: String, prep: Prep) {
         bringDolaToFront()
+        handleLogin()
         val cm = getSystemService(ClipboardManager::class.java)
         cm.setPrimaryClip(ClipData.newPlainText("allai", prompt))
         switchToPro()
@@ -139,7 +141,7 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun ensureDolaApp() {
         launchDola()
-        Thread.sleep(5000)
+        Thread.sleep(8000)
         checkStop()
     }
 
@@ -211,11 +213,13 @@ class DolaAutomationService : AccessibilityService() {
         return hit
     }
 
-    private fun waitChatReady(timeout: Long) {
+    private fun waitChatReady(timeout: Long, retryLogin: Boolean = true) {
         val end = System.currentTimeMillis() + timeout
         while (System.currentTimeMillis() < end) {
             checkStop()
-            if (findEditable() != null || screenHasText(listOf("Сообщение", "Опишите", "Создано ИИ"))) return
+            val hasField = findEditable() != null || screenHasText(listOf("Сообщение", "Опишите", "Создано ИИ"))
+            if (hasField && !loginVisible()) return
+            if (retryLogin && loginVisible()) handleLogin()
             Thread.sleep(1500)
         }
         BotLog.add("Окно Dola не подтвердилось, продолжаю вслепую")
@@ -224,13 +228,14 @@ class DolaAutomationService : AccessibilityService() {
     private fun handleLogin() {
         if (!loginVisible()) return
         BotLog.add("Вижу экран входа — логинюсь через Google")
-        if (tapByText(LOGIN_BTNS.split("\u0000"), 8_000, optional = true)) {
-            if (tapByText(GOOGLE_BTNS.split("\u0000"), 12_000, optional = true)) {
-                pickGoogleAccount(60_000)
-                tapConsent(20_000)
-            }
+        if (tapByText(LOGIN_BTNS.split("\u0000"), 10_000, optional = true)) Thread.sleep(1500)
+        if (!tapByText(GOOGLE_BTNS.split("\u0000"), 30_000, optional = true)) {
+            BotLog.add("Кнопку Google не нашёл — нажми её сам, дальше сам")
         }
-        waitChatReady(120_000)
+        pickGoogleAccount(60_000)
+        tapConsent(30_000)
+        waitChatReady(180_000, retryLogin = false)
+        BotLog.add("Вход завершён" + if (findEditable() != null) "" else " (не подтвердилось, продолжаю)")
     }
 
     private fun loginVisible(): Boolean {
@@ -252,10 +257,11 @@ class DolaAutomationService : AccessibilityService() {
 
     private fun pickGoogleAccount(timeout: Long) {
         val end = System.currentTimeMillis() + timeout
+        var hinted = false
         while (System.currentTimeMillis() < end) {
             checkStop()
             val acc = findNodes {
-                val t = (it.text ?: "").toString()
+                val t = (it.text ?: "").toString() + " " + (it.contentDescription ?: "")
                 t.contains("@gmail", true) || t.contains("googlemail", true)
             }
             if (acc.isNotEmpty()) {
@@ -273,8 +279,13 @@ class DolaAutomationService : AccessibilityService() {
                 Thread.sleep(4000)
                 return
             }
+            if (!hinted && System.currentTimeMillis() > end - timeout / 2) {
+                hinted = true
+                BotLog.add("Не вижу список аккаунтов — выбери аккаунт сам, я жду")
+            }
             Thread.sleep(1500)
         }
+        BotLog.add("Выбор аккаунта не подтверждён, продолжаю")
     }
 
     private fun switchToPro() {
@@ -411,7 +422,8 @@ class DolaAutomationService : AccessibilityService() {
         Thread.sleep(6000)
         tapByText(listOf("Продолжить", "Continue", "Начать", "Get started"), 5_000, optional = true)
         handleLogin()
-        waitChatReady(90_000)
+        waitChatReady(120_000)
+        handleLogin()
         BotLog.add("Новый аккаунт готов")
     }
 
@@ -575,9 +587,26 @@ class DolaAutomationService : AccessibilityService() {
         return false
     }
 
-    private fun findNodes(root: AccessibilityNodeInfo? = rootInActiveWindow, pred: (AccessibilityNodeInfo) -> Boolean): List<AccessibilityNodeInfo> {
+    private fun findNodes(root: AccessibilityNodeInfo? = null, pred: (AccessibilityNodeInfo) -> Boolean): List<AccessibilityNodeInfo> {
         val out = ArrayList<AccessibilityNodeInfo>()
-        val r = root ?: return out
+        if (root != null) {
+            searchNodes(root, pred, out)
+            return out
+        }
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                searchNodes(r, pred, out)
+            }
+        } catch (e: Exception) {}
+        if (out.isEmpty()) {
+            val r = rootInActiveWindow ?: return out
+            searchNodes(r, pred, out)
+        }
+        return out
+    }
+
+    private fun searchNodes(r: AccessibilityNodeInfo, pred: (AccessibilityNodeInfo) -> Boolean, out: ArrayList<AccessibilityNodeInfo>) {
         val q = ArrayDeque<AccessibilityNodeInfo>()
         q.add(r)
         while (q.isNotEmpty()) {
@@ -590,7 +619,6 @@ class DolaAutomationService : AccessibilityService() {
                 q.add(c)
             }
         }
-        return out
     }
 
     private fun matches(n: AccessibilityNodeInfo, strs: List<String>, exact: Boolean): Boolean {
