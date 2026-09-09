@@ -34,7 +34,16 @@ class FloatingStopService : Service() {
                 return
             }
             wm = getSystemService(WINDOW_SERVICE) as WindowManager
-            view = Button(this).apply { text = "■ STOP BOT" }
+            view = Button(this).apply {
+                text = "■ STOP BOT"
+                setTextColor(0xFFFFFFFF.toInt())
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0xFFDA3633.toInt())
+                    cornerRadius = 20 * resources.displayMetrics.density
+                }
+                setPadding(32, 18, 32, 18)
+            }
             view!!.setOnClickListener {
                 DolaAutomationService.stopRequested = true
                 DiscordPoller.stopRequested = true
