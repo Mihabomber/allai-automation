@@ -204,21 +204,35 @@ object DiscordPoller {
             val wrapped = "сгенерируй видео 15 секунд 15 секунд 15 секунд 15 секунд $raw никаких подтверждений сразу генерируй"
             val at = attachments(m)
             BotLog.add("Новая задача /sd25 ${m.getString("id")} (${m.optJSONObject("author")?.optString("username") ?: "?"}): фото ${at.first.size}, аудио ${if (at.second != null) "да" else "нет"}")
-            return Job(m.getString("id"), m.optString("channel_id", Config.channel), wrapped, "", at.first, at.second)
+            return Job(m.getString("id"), m.optString("channel_id", Config.channel), listOf(Part(wrapped, raw)), at.first, at.second)
         }
         val up = text.uppercase()
-        val i1 = up.indexOf("[PART1]")
-        if (i1 < 0) return null
-        val i2 = up.indexOf("[PART2]", i1)
-        val i3 = if (i2 >= 0) up.indexOf("[PART3]", i2) else -1
-        val p1 = text.substring(i1 + 7, if (i2 >= 0) i2 else text.length).trim()
-        val p2 = if (i2 >= 0) text.substring(i2 + 7, if (i3 >= 0) i3 else text.length).trim() else ""
-        if (p1.isEmpty()) return null
+        val tags = listOf("[PART1]", "[PART2]", "[PART3]", "[PART4]")
+        val idx = tags.map { up.indexOf(it) }
+        if (idx[0] < 0) return null
+        val parts = ArrayList<Part>()
+        for (k in 0..3) {
+            val s = idx[k]
+            if (s < 0) continue
+            var e = text.length
+            for (j in k + 1..3) {
+                if (idx[j] > s && idx[j] < e) e = idx[j]
+            }
+            val t = text.substring(s + 7, e).trim()
+            if (t.isNotEmpty()) parts.add(Part(t, t))
+        }
+        if (parts.isEmpty()) return null
         val at = attachments(m)
         val images = at.first
         val audio = at.second
-        BotLog.add("Новая задача ${m.getString("id")} (${m.optJSONObject("author")?.optString("username") ?: "?"}): фото ${images.size}, аудио ${if (audio != null) "да" else "нет"}")
-        return Job(m.getString("id"), m.optString("channel_id", Config.channel), p1, p2, images, audio)
+        BotLog.add("Новая задача ${m.getString("id")} (${m.optJSONObject("author")?.optString("username") ?: "?"}): частей ${parts.size}, фото ${images.size}, аудио ${if (audio != null) "да" else "нет"}")
+        return Job(m.getString("id"), m.optString("channel_id", Config.channel), parts, images, audio)
+    }
+
+    fun markProcessed(id: String) {
+        val done = Config.processed.split(",").filter { it.isNotBlank() }.toCollection(LinkedHashSet())
+        done.add(id)
+        Config.processed = done.toList().takeLast(60).joinToString(",")
     }
 
     private fun attachments(m: JSONObject): Pair<List<String>, String?> {
@@ -296,7 +310,8 @@ object DiscordPoller {
         false
     }
 
-    data class Job(val id: String, val channel: String, val part1: String, val part2: String, val images: List<String>, val audio: String?)
+    data class Part(val prompt: String, val raw: String)
+    data class Job(val id: String, val channel: String, val parts: List<Part>, val images: List<String>, val audio: String?)
 }
 
 private fun JSONArray.isNotEmpty() = length() > 0

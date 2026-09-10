@@ -29,5 +29,22 @@ object Config {
     var processed: String
         get() = sp.getString("processed", "") ?: ""
         set(v) = sp.edit().putString("processed", v).apply()
+    var day: String
+        get() = sp.getString("day", "") ?: ""
+        set(v) = sp.edit().putString("day", v).apply()
+    var dayJobs: Int
+        get() = sp.getInt("dayJobs", 0)
+        set(v) = sp.edit().putInt("dayJobs", v).apply()
+    var dayParts: Int
+        get() = sp.getInt("dayParts", 0)
+        set(v) = sp.edit().putInt("dayParts", v).apply()
+    fun rollDay() {
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        if (day != today) {
+            day = today
+            dayJobs = 0
+            dayParts = 0
+        }
+    }
     fun ready(): Boolean = token.isNotEmpty() && channel.isNotEmpty()
 }

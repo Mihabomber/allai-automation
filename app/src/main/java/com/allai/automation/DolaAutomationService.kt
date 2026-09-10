@@ -38,6 +38,7 @@ class DolaAutomationService : AccessibilityService() {
         @Volatile var instance: DolaAutomationService? = null
         @Volatile var stopRequested = false
         @Volatile var lastVideoUrl = ""
+        @Volatile var lastLiveOk = false
         private const val LOGIN_BTNS = "Войти\u0000Войдите\u0000Вход\u0000Sign In\u0000Sign in\u0000Log in"
         private const val GOOGLE_BTNS = "Продолжить с Google\u0000Продолжить через Google\u0000Войти через Google\u0000Sign in with Google\u0000Continue with Google"
         private const val DOWNLOAD_BTNS = "Скачать\u0000Download\u0000Save\u0000Сохранить"
@@ -83,6 +84,8 @@ class DolaAutomationService : AccessibilityService() {
     }
 
     private fun execute(job: DiscordPoller.Job): List<File> {
+        lastLiveOk = false
+        lastVideoUrl = ""
         ensureDolaApp()
         Thread.sleep(3000)
         handleLogin()
@@ -90,15 +93,47 @@ class DolaAutomationService : AccessibilityService() {
         waitChatReady(30_000, retryLogin = false)
         val prep = prepare(job)
         val out = ArrayList<File>()
-        BotLog.add("Генерирую PART1")
-        out.add(generateFlow(job.part1, "part1", prep))
-        if (job.part2.isNotEmpty()) {
+        job.parts.forEachIndexed { i, part ->
             checkStop()
-            BotLog.add("Генерирую PART2")
-            out.add(generateFlow(job.part2, "part2", prep))
+            Config.rollDay()
+            if (Config.dayParts >= 4) {
+                DiscordPoller.send(job.channel, "❌ Лимит: 4 видео (60 секунд) в день исчерпано. Приходи завтра.")
+                BotLog.add("Дневной лимит частей исчерпан, остаток пропускаю")
+                return out
+            }
+            if (i > 0) {
+                BotLog.add("Часть ${i + 1}: проверяю вход")
+                handleLogin()
+                handleBirthday()
+                waitChatReady(20_000, retryLogin = false)
+            }
+            BotLog.add("Генерирую часть ${i + 1} из ${job.parts.size}")
+            val f = generateFlow(part.prompt, "part${i + 1}", prep)
+            out.add(f)
+            sendPartLive(job, part, f)
+            Config.rollDay()
+            Config.dayParts = Config.dayParts + 1
+            if (i < job.parts.size - 1) {
+                checkStop()
+                BotLog.add("Часть ${i + 1} отправлена — удаляю аккаунт для следующей")
+                rotateAccount()
+            }
         }
+        lastLiveOk = true
         BotLog.add("Задача выполнена: ${out.size} видео")
         return out
+    }
+
+    private fun sendPartLive(job: DiscordPoller.Job, part: DiscordPoller.Part, f: File) {
+        val url = lastVideoUrl
+        val head = "PROMT: ${part.prompt}\nвот тебе prompt: ${part.raw}"
+        if (url.isNotEmpty()) DiscordPoller.send(job.channel, "$head\n✅ Видео: $url")
+        if (f.length() > 10_000 && (f.name.endsWith(".mp4") || f.name.endsWith(".webm"))) {
+            DiscordPoller.sendVideo(job.channel, "✅ Часть: ${f.name}", f)
+        } else if (url.isEmpty()) {
+            DiscordPoller.send(job.channel, "$head\n❌ Ошибка: нет видео и нет ссылки")
+        }
+        lastVideoUrl = ""
     }
 
     private fun generateFlow(prompt: String, tag: String, prep: Prep): File {

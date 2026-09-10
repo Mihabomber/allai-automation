@@ -29,6 +29,20 @@ object BotEngine {
                         Thread.sleep(Config.pollSec * 1000L)
                         continue
                     }
+                    Config.rollDay()
+                    if (Config.dayJobs >= 2) {
+                        DiscordPoller.send(job.channel, "❌ Лимит: 2 задачи в день. Приходи завтра.")
+                        DiscordPoller.markProcessed(job.id)
+                        BotLog.add("Дневной лимит задач, пропускаю ${job.id}")
+                        continue
+                    }
+                    if (Config.dayParts >= 4) {
+                        DiscordPoller.send(job.channel, "❌ Лимит: 4 видео (60 секунд) в день исчерпано. Приходи завтра.")
+                        DiscordPoller.markProcessed(job.id)
+                        BotLog.add("Дневной лимит частей, пропускаю ${job.id}")
+                        continue
+                    }
+                    Config.dayJobs = Config.dayJobs + 1
                     val latch = CountDownLatch(1)
                     var ok = false
                     var files: List<File> = emptyList()
@@ -37,8 +51,12 @@ object BotEngine {
                         ok = o; files = f; err = e; latch.countDown()
                     }
                     BotState.step = "РАБОТАЮ: задача ${job.id}"
-                    latch.await(45, TimeUnit.MINUTES)
+                    latch.await(180, TimeUnit.MINUTES)
                     BotState.step = "ОЖИДАНИЕ"
+                    if (ok && files.isEmpty() && DolaAutomationService.lastLiveOk) {
+                        BotLog.add("Все части уже отправлены в ЛС")
+                        continue
+                    }
                     val url = DolaAutomationService.lastVideoUrl
                     val vids = files.filter { it.length() > 10_000 && (it.name.endsWith(".mp4") || it.name.endsWith(".webm")) }
                     if (url.isNotEmpty()) {
