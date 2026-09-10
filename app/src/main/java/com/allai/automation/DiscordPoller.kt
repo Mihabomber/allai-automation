@@ -201,7 +201,7 @@ object DiscordPoller {
         if (trimmed.startsWith("/sd25", true)) {
             val raw = trimmed.substring(5).trim()
             if (raw.isEmpty()) return null
-            val wrapped = "сгенерируй видео 15 секунд 15 секунд 15 секунд 15 секунд $raw никаких подтверждений сразу генерируй"
+            val wrapped = "сгенерируй 15 сек без подтверждений и дай ссылку $raw"
             val at = attachments(m)
             BotLog.add("Новая задача /sd25 ${m.getString("id")} (${m.optJSONObject("author")?.optString("username") ?: "?"}): фото ${at.first.size}, аудио ${if (at.second != null) "да" else "нет"}")
             return Job(m.getString("id"), m.optString("channel_id", Config.channel), listOf(Part(wrapped, raw)), at.first, at.second)
